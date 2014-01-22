@@ -22,8 +22,9 @@ ${TARGET}: ${OBJS}
 %.o: %.c
 	${CC} ${CFLAGS} ${DEBUG} ${SSL} -c -o $@ $<
 
-.PHONY: clean tags
+tags: ${SRCS} ${HDRS} 
+	ctags ${SRCS} ${HDRS}
+
+.PHONY: clean
 clean:
 	rm -rf ${TARGET} ${OBJS} tags
-tags:
-	ctags ${SRCS} ${HDRS}
