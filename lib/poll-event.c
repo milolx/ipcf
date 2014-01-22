@@ -1,17 +1,14 @@
-#include "poll-loop.h"
+#include <stdio.h>
+#include <poll.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <limits.h>
+
+#include "poll-event.h"
 #include "list.h"
 #include "ts.h"
 
-#include <errno.h>
 #include <inttypes.h>
-#include <poll.h>
-#include <stdlib.h>
-#include <string.h>
-#include "coverage.h"
-#include "dynamic-string.h"
-#include "fatal-signal.h"
-#include "socket-util.h"
-#include "vlog.h"
 
 /* An event that will wake the following call to poll_block(). */
 struct poll_waiter {
@@ -170,7 +167,7 @@ poll_cancel(struct poll_waiter *pw)
 static struct poll_waiter *
 new_waiter(int fd, short int events)
 {
-    struct poll_waiter *waiter = xzalloc(sizeof *waiter);
+    struct poll_waiter *waiter = xcalloc(1, sizeof *waiter);
     waiter->fd = fd;
     waiter->events = events;
     list_push_back(&waiters, &waiter->node);

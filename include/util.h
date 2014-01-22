@@ -1,8 +1,12 @@
 #ifndef __UTIL_H__
 #define __UTIL_H__
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <stdint.h>
+#include <stdbool.h>
 
+#define OBJECT_OFFSETOF(OBJECT, MEMBER) offsetof(typeof(*(OBJECT)), MEMBER)
 #define OBJECT_CONTAINING(POINTER, OBJECT, MEMBER)                      \
     ((typeof(OBJECT)) ((char *) (POINTER) - OBJECT_OFFSETOF(OBJECT, MEMBER)))
 #define ASSIGN_CONTAINER(OBJECT, POINTER, MEMBER) \

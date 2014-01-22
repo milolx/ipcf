@@ -58,22 +58,10 @@ resize(struct hmap *hmap, size_t new_mask)
 	}
 	for (i = 0; i <= hmap->mask; i++) {
 		struct hmap_node *node, *next;
-#ifdef __DEBUG__
-		int count = 0;
-#endif
 		for (node = hmap->buckets[i]; node; node = next) {
 			next = node->next;
 			hmap_insert_fast(&tmp, node, node->hash);
-#ifdef __DEBUG__
-			count++;
-#endif
 		}
-#ifdef __DEBUG__
-		if (count > 5) {
-			printf("hmap warning:%d nodes in bucket (%d nodes, %d buckets)\n",
-					count, hmap->n, hmap->mask + 1);
-		}
-#endif
 	}
 	hmap_swap(hmap, &tmp);
 	hmap_destroy(&tmp);

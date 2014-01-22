@@ -133,7 +133,7 @@ hmap_next_with_hash__(const struct hmap_node *node, size_t hash)
     while (node != NULL && node->hash != hash) {
         node = node->next;
     }
-    return node;
+    return (struct hmap_node *)node;
 }
 
 /* Returns the first node in 'hmap' with the given 'hash', or a null pointer if
