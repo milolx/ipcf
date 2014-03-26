@@ -20,34 +20,29 @@ typedef struct {
 		struct tcphdr tcp;
 		struct udphdr udp;
 	}tl;
-	u8 fid;		// compact-ipid
-	index_node_t* index;
+	u8 fid;		// compact-ipid, also used as index
+	u8 frag_id;	// for possible frag pkts
 	int soft_timeout;
 }flow_node_t;
 
 typedef struct {
 	struct hmap_node node;
+	u8 id;
 	u16 ipid;
 	flow_node_t *flow;
 }frag_node_t;
 
-typedef struct {
-	struct hmap_node node;
-	u8 fid;
-	flow_node_t *flow;
-}index_node_t;
-
 struct hmap flow_hmap;
 struct hmap frag_hmap;
-struct hmap index_hmap;
 
 idpool_t *idp;
+static flow_node_t* flow_rindex[1<<N_ID_BITS];
+
 
 void compact_init()
 {
 	hmap_init(&flow_hmap);
 	hmap_init(&frag_hmap);
-	hmap_init(&index_hmap);
 
 	idp = init_idpool(1<<N_ID_BITS);
 }
@@ -123,37 +118,9 @@ flow_node_t* build_flow_by_hash(uint32_t hval, struct key *key, void *ippkt, u8 
 		assert(1);	// never happen
 	}
 	n->fid = fid;
-	n->index = NULL;
+	n->frag_id = 0;
 	n->soft_timeout = ts_msec() + SOFT_TIMEOUT_INTERVAL;
 	hmap_insert(&flow_hmap, &n->node, hval);
-}
-
-uint32_t get_index_hash(u8 dstmac, u8 fid)
-{
-	uint32_t h;
-	u16 t;
-
-	t = dstmac;
-	t <<= 8;
-	t |= fid;
-	h = hash_bytes(&t, sizeof t);
-
-	return h;
-}
-
-index_node_t* build_index_by_hash(u8 dstmac, u8 fid)
-{
-	index_node_t *n;
-	uint32_t h;
-
-	h = get_index_hash(destmac, fid);
-
-	n = xmalloc(sizeof *n);
-	n->fid = fid;
-	n->flow = NULL;
-	hmap_insert(&index_hmap, &n->node, h);
-
-	return n;
 }
 
 frag_node_t* build_frag_hmap(u16 ipid, flow_node_t* flow)
@@ -164,6 +131,7 @@ frag_node_t* build_frag_hmap(u16 ipid, flow_node_t* flow)
 	h = hash_bytes(&ipid, sizeof ipid);
 
 	n = xmalloc(sizeof *n);
+	n->id = flow->frag_id++ % (1<N_FRAG_ID_BITS);
 	n->ipid = ipid;
 	n->flow = flow;
 	hmap_insert(&frag_hmap, &n->node, h);
@@ -186,7 +154,181 @@ void add_to_pkt_list(struct list *pkt_list, void *data, u16 len)
 	list_push_back(pkt_list, &pkt->node);
 }
 
-xmit_compress(u8 dstmac, void *ippkt, struct list *pkt_list)
+void build_ctl(struct list *pkt_list, flow_node_t *flow)
+{
+	pkt_t *pkt;
+	chdr_t *ctl_hdr;
+
+	pkt = xmalloc(sizeof *pkt);
+	ctl_hdr = pkt->data;
+	ctl_hdr->t = CTYPE_FRM_CTL;
+	ctl_hdr->i = CTYPE_CTL_REQ;
+	ctl_hdr->smac = MYMAC;
+	ctl_hdr->id = flow->fid;
+	pkt->len = sizeof *ctl_hdr;
+	memcpy(pkt->data + pkt->len, flow->ip, sizeof flow->ip);
+	pkt->len += sizeof flwo->ip;
+	if (ip->protocol == PROTOCOL_TCP) {
+		memcpy(pkt->data + pkt->len, flow->tl.tcp, sizeof flow->tl.tcp);
+		pkt->len += sizeof flwo->tl.tcp;
+	}
+	else if (ip->protocol == PROTOCOL_UDP) {
+		memcpy(pkt->data + pkt->len, flow->tl.tcp, sizeof flow->tl.tcp);
+		pkt->len += sizeof flwo->tl.tcp;
+	}
+	else {
+		assert(1);	// never happen
+	}
+
+	list_push_back(pkt_list, &pkt->node);
+}
+
+void build_normal(struct list *pkt_list, flow_node_t *flow, void *ippkt)
+{
+	struct iphdr *iphdr = (struct iphdr *)ippkt;
+	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof struct iphdr);
+	struct udphdr *udphdr = (struct udphdr *)(ippkt + sizeof struct iphdr);
+
+	pkt_t *pkt;
+	chdr_t *common_hdr;
+
+	pkt = xmalloc(sizeof *pkt);
+	common_hdr = pkt->data;
+	common_hdr->i = 0;
+	common_hdr->smac = MYMAC;
+	common_hdr->id = flow->fid;
+	pkt->len = sizeof *common_hdr;
+
+	if (iphdr->protocol == PROTOCOL_TCP) {
+		common_hdr->t = CTYPE_FRM_TCP;
+
+		if (tcphdr->urg) {
+			if (tcphdr->syn)
+				common_hdr->i |= CTYPE_TCP_URGSYN;
+			else if (tcphdr->fin)
+				common_hdr->i |= CTYPE_TCP_URGFIN;
+			else if (tcphdr->psh)
+				common_hdr->i |= CTYPE_TCP_URGPSH;
+			else
+				common_hdr->i |= CTYPE_TCP_URG;
+		}
+		else {
+			if (tcphdr->syn)
+				common_hdr->i |= CTYPE_TCP_SYN;
+			else if (tcphdr->fin)
+				common_hdr->i |= CTYPE_TCP_FIN;
+			else if (tcphdr->psh)
+				common_hdr->i |= CTYPE_TCP_PSH;
+			else
+				assert(1);
+		}
+
+		common_hdr->i |= CTYPE_TCP_SBIT;
+		memcpy(pkt->data + pkt->len, &tcphdr->seq, sizeof tcphdr->seq);
+		pkt->len += sizeof tcphdr->seq;
+
+		if (tcphdr->ack) {
+			common_hdr->i |= CTYPE_TCP_ABIT;
+			memcpy(pkt->data + pkt->len, &tcphdr->ack_seq, sizeof tcphdr->ack_seq);
+			pkt->len += sizeof tcphdr->ack_seq;
+		}
+
+		common_hdr->i |= CTYPE_TCP_WBIT;
+		memcpy(pkt->data + pkt->len, &tcphdr->window, sizeof tcphdr->window);
+		pkt->len += sizeof tcphdr->window;
+
+		if (tcphdr->urg) {
+			memcpy(pkt->data + pkt->len, &tcphdr->urg_ptr, sizeof tcphdr->urg_ptr);
+			pkt->len += sizeof tcphdr->urg_ptr;
+		}
+
+		memcpy(pkt->data + pkt->len, &tcphdr->check, sizeof tcphdr->check);
+		pkt->len += sizeof tcphdr->check;
+
+		memcpy(pkt->data + pkt->len,
+			ippkt + sizeof *iphdr + sizeof *tcphdr,
+			iphdr->tot_len - ippkt + sizeof *iphdr + sizeof *tcphdr);
+		pkt->len += iphdr->tot_len - sizeof *iphdr - sizeof *tcphdr;
+	}
+	else if (iphdr->protocol == PROTOCOL_UDP) {
+		common_hdr->t = CTYPE_FRM_UDP;
+
+		memcpy(pkt->data + pkt->len, &udphdr->check, sizeof udphdr->check);
+		pkt->len += sizeof udphdr->check;
+
+		memcpy(pkt->data + pkt->len,
+			ippkt + sizeof *iphdr + sizeof *udphdr,
+			iphdr->tot_len - ippkt + sizeof *iphdr + sizeof *udphdr);
+		pkt->len += iphdr->tot_len - sizeof *iphdr - sizeof *udphdr;
+	}
+	else {
+		assert(1);	// never happen
+	}
+
+	list_push_back(pkt_list, &pkt->node);
+}
+
+void build_frag(struct list *pkt_list, frag_node_t *frag, void *ippkt)
+{
+	struct iphdr *iphdr = (struct iphdr *)ippkt;
+
+	pkt_t *pkt;
+	chdr_t *common_hdr;
+
+	pkt = xmalloc(sizeof *pkt);
+	common_hdr->t = CTYPE_FRM_RAW;
+	common_hdr = pkt->data;
+	common_hdr->i = 0;
+	common_hdr->smac = MYMAC;
+	common_hdr->id = flow->fid;
+	pkt->len = sizeof *common_hdr;
+
+	common_hdr->i |= CTYPE_RAW_FBIT;
+	if (iphdr->frag_off & FRAG_FLAG_MF_MASK)
+		common_hdr->i |= CTYPE_RAW_MFBIT;
+	common_hdr->i |= frag->id;
+
+	memcpy(pkt->data + pkt->len,
+		&iphdr->frag_off & FRAG_OFF_MASK,
+		sizeof iphdr->frag_off);
+	pkt->len += sizeof iphdr->frag_off;
+
+	memcpy(pkt->data + pkt->len,
+			ippkt + sizeof *iphdr
+			iphdr->tot_len - sizeof *iphdr);
+	pkt->len += iphdr->tot_len - sizeof *iphdr;
+
+	list_push_back(pkt_list, &pkt->node);
+}
+
+void timer_event()
+{
+	flow_node_t *flow;
+	long long int now = ts_msec();
+
+	HMAP_FOR_EACH(flow, node, &flow_hmap) {
+		if (now < flow->soft_timeout)
+			continue;
+
+		// timeout
+		switch (flow->state) {
+			case STATE_NEW:
+				break;
+			case STATE_PENDING:
+				if (timout1)
+					remove_flow();
+				break;
+			case STATE_ESTABLISHED:
+				if (timout2)
+					remove_flow();
+				break;
+			default:
+				break;
+		}
+	}
+}
+
+void xmit_compress(void *ippkt, struct list *pkt_list)
 {
 	struct iphdr *iphdr = (struct iphdr *)ippkt;
 	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof struct iphdr);
@@ -234,12 +376,10 @@ xmit_compress(u8 dstmac, void *ippkt, struct list *pkt_list)
 			u8 fid;
 
 			fid = get_id(idp);
-			flow = build_flow_by_hash(flow_hval, &key, ippkt, fid);
-			// reverse-locate flow entry via compact-ipid
-			index = build_index_by_hash(dstmac, fid);
+			// reverse-locate flow entry also via fid
 
-			flow->index = index;
-			index->flow = flow;
+			flow = build_flow_by_hash(flow_hval, &key, ippkt, fid);
+			flow_rindex[fid] = flow;
 		}
 		if (iphdr->frag_off & FRAG_FLAG_MF_MASK) {
 			// first pkt of a fragmentation group
@@ -253,15 +393,19 @@ xmit_compress(u8 dstmac, void *ippkt, struct list *pkt_list)
 		flow = frag->flow;
 	switch (flow->state) {
 		case STATE_NEW:
-			ctlpkt = build_ctl(ippkt);
-			send(ctlpkt);
-			flow_state = PENDING;
-			send(ippkt);
+			build_ctl(pkt_list, flow);
+			add_to_pkt_list(pkt_list, ippkt, iphdr->tot_len);
+			flow->state = PENDING;
 			break;
 		case STATE_PENDING:
-			send(ippkt);
+			add_to_pkt_list(pkt_list, ippkt, iphdr->tot_len);
 			break;
 		case STATE_ESTABLISHED:
+	if (iphdr->frag_off & FRAG_OFF_MASK) {
+		build_frag(pkt_list, frag, ippkt);
+	}
+	else {
+	}
 			cpkt = build(pkt);
 			send(cpkt);
 			break;
@@ -273,71 +417,73 @@ xmit_compress(u8 dstmac, void *ippkt, struct list *pkt_list)
 	touch_flow(flow);
 }
 
-void build_ctrl(ippkt)
+// return actural length in ippkt
+int recv_compress(void *cpkt, void *ippkt, int size)
 {
-	struct iphdr *iphdr = (struct iphdr *)ippkt;
-	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof struct iphdr);
-	struct udphdr *udphdr = (struct udphdr *)(ippkt + sizeof struct iphdr);
+	struct iphdr *iphdr = (struct iphdr *)cpkt;
+	chdr_t *chdr = (chdr_t *)cpkt;
 
-}
+	flow_node_t *flow;
+	int len;
 
-build(pkt)
-{
-	if (fragment)
-		ret = build_frag(pkt);
-	else if (tcp)
-		ret = build_tcp(pkt);
-	else if (udp)
-		ret = build_udp(pkt);
-}
+	list_init(pkt_list);
 
-build_tcp(pkt)
-{
-}
+	if (iphdr->version == 4 && iphdr->ihl >= 5) {
+		if (!csum(iphdr, sizeof *iphdr)) {
+			// ipv4
+			len = size >= iphdr->tot_len ? iphdr->tot_len:size;
+			memcpy(ippkt, cpkt, len);
+			return len;
+		}
+	}
 
-build_frag(pkt)
-{
-}
-
-build_udp(pkt)
-{
-}
-
-timer_event()
-{
-	FOR_EACH_IN_HASH_TABLE() {
-	switch (flow_state) {
-		case NEW:
+	switch (chdr->t) {
+		case CTYPE_FRM_CTL:
+			len = recv_ctl(cpkt, ippkt, size);
 			break;
-		case PENDING:
-			if (timout1)
-				remove_flow();
+		case CTYPE_FRM_TCP:
+			len = recv_tcp(cpkt, ippkt, size);
 			break;
-		case ESTB:
-			if (timout2)
-				remove_flow();
+		case CTYPE_FRM_UDP:
+			len = recv_udp(cpkt, ippkt, size);
+			break;
+		case CTYPE_FRM_RAW:
+			len = recv_raw(cpkt, ippkt, size);
 			break;
 		default:
-			break;
+			assert(1);
 	}
-	}
+
+	return 0;
 }
 
-on_recv(pkt)
+int recv_ctl(void *cpkt, void *ippkt, int size)
 {
-	if (crl)
-		process_ctl(pkt);
-	else
-		process_data(pkt);
+	chdr_t *chdr = (chdr_t *)cpkt;
+	int len;
+
+	return len;
 }
 
-process_ctl(pkt)
+int recv_tcp(void *cpkt, void *ippkt, int size)
 {
-	if (compact)
-}
+	chdr_t *chdr = (chdr_t *)cpkt;
+	int len;
 
-process_data(pkt)
+	return len;
+}
+int recv_udp(void *cpkt, void *ippkt, int size)
 {
-	if (compact)
+	chdr_t *chdr = (chdr_t *)cpkt;
+	int len;
+
+	return len;
+}
+int recv_raw(void *cpkt, void *ippkt, int size)
+{
+	chdr_t *chdr = (chdr_t *)cpkt;
+	int len;
+
+	return len;
 }
 

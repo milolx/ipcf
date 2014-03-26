@@ -72,14 +72,35 @@ struct udphdr {
 	u16 check;
 };
 
-struct key {
+struct {
 	u32 saddr,
 	u32 daddr,
 	u16 sport,
 	u16 dport,
 	u8  proto,
-}__attribute__((packed));
+}__attribute__((packed)) key_t;
 
+#define CTYPE_FRM_CTL		0
+#define CTYPE_FRM_TCP		1
+#define CTYPE_FRM_UDP		2
+#define CTYPE_FRM_RAW		3
+#define CTYPE_CTL_REQ		1
+#define CTYPE_CTL_ACK		2
+#define CTYPE_CTL_FLT		3
+#define CTYPE_TCP_SBIT		0x20	// has seq
+#define CTYPE_TCP_ABIT		0x10	// has ack
+#define CTYPE_TCP_WBIT		0x08	// has window size
+#define CTYPE_TCP_URG		0x0
+#define CTYPE_TCP_SYN		0x1
+#define CTYPE_TCP_FIN		0x2
+#define CTYPE_TCP_RST		0x3
+#define CTYPE_TCP_PSH		0x4
+#define CTYPE_TCP_URGSYN	0x5
+#define CTYPE_TCP_URGFIN	0x6
+#define CTYPE_TCP_URG&PSH	0x7
+#define CTYPE_RAW_FBIT		0x20	// fragment
+#define CTYPE_RAW_MFBIT		0x10	// more fragment
+#define CTYPE_RAW_IDMASK	0xf
 typedef struct {
 #if defined(__LITTLE_ENDIAN__)
 	u8 i:6,
@@ -92,31 +113,7 @@ typedef struct {
 #endif
 	u8 smac,
 	u8 id,
-}__attribute__((packed)) chdr_common_t;
-
-typedef struct {
-#if defined(__LITTLE_ENDIAN__)
-	u8 c:6,
-	u8 t:2,
-#elif defined(__BIG_ENDIAN__)
-	u8 t:2,
-	u8 c:6,
-#else
-#error "__LITTLE_ENDIAN__ or __BIG_ENDIAN__ must be defined"
-#endif
-	u8 smac,
-	u8 id,
-}__attribute__((packed)) cctl_hdr_t;
-
-
-#define SPB_URG		0x0
-#define SPB_SYN		0x1
-#define SPB_FIN		0x2
-#define SPB_RST		0x3
-#define SPB_PSH		0x4
-#define SPB_URGSYN	0x5
-#define SPB_URGFIN	0x6
-#define SPB_URGPSH	0x7
+}__attribute__((packed)) chdr_t;
 
 struct pkt_orig {
 	struct iphdr ip,
