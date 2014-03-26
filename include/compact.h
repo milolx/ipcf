@@ -16,8 +16,13 @@ struct iphdr {
 	u8  tos;
 	u16 tot_len;
 	u16 id;
+#define FRAG_FLAG_DF_MASK	0x4000
+#define FRAG_FLAG_MF_MASK	0x2000
+#define FRAG_OFF_MASK		0x1fff
 	u16 frag_off;
 	u8  ttl;
+#define PROTOCOL_TCP		0x06
+#define PROTOCOL_UDP		0x11
 	u8  protocol;
 	u16 check;
 	u32 saddr;
