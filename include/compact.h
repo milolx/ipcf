@@ -115,7 +115,7 @@ typedef struct {
 	u8 id,
 }__attribute__((packed)) chdr_t;
 
-struct pkt_orig {
+struct orig_hdr {
 	struct iphdr ip,
 	union {
 		struct tcphdr tcp,

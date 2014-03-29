@@ -11,19 +11,24 @@ typedef struct {
 typedef struct {
 	struct hmap_node node;
 #define STATE_NEW		1
-#define STATE_PENDING		1
-#define STATE_ESTABLISHED	1
+#define STATE_PENDING		2
+#define STATE_ESTABLISHED	3
 	u8 state;
 	struct key key;
-	struct iphdr ip;
-	union {
-		struct tcphdr tcp;
-		struct udphdr udp;
-	}tl;
+	struct orig_hdr hdr;
 	u8 fid;		// compact-ipid, also used as index
 	u8 frag_id;	// for possible frag pkts
 	int soft_timeout;
 }flow_node_t;
+
+typedef struct {
+	struct hmap_node node;
+	struct key key;
+	struct orig_hdr hdr;
+	u8 fid;		// compact-ipid, also used as index
+	u8 frag_id;	// for possible frag pkts
+	int soft_timeout;
+}rflow_node_t;
 
 typedef struct {
 	struct hmap_node node;
@@ -111,9 +116,9 @@ flow_node_t* build_flow_by_hash(uint32_t hval, struct key *key, void *ippkt, u8 
 	n->key = *key;
 	n->ip = *iphdr;
 	if (iphdr->protocol == PROTOCOL_TCP)
-		n->tl.tcp = *tcphdr;
+		n->hdr.t.tcp = *tcphdr;
 	else if (iphdr->protocol == PROTOCOL_UDP)
-		n->tl.udp = *udphdr;
+		n->hdr.t.udp = *udphdr;
 	else {
 		assert(1);	// never happen
 	}
@@ -169,12 +174,12 @@ void build_ctl(struct list *pkt_list, flow_node_t *flow)
 	memcpy(pkt->data + pkt->len, flow->ip, sizeof flow->ip);
 	pkt->len += sizeof flwo->ip;
 	if (ip->protocol == PROTOCOL_TCP) {
-		memcpy(pkt->data + pkt->len, flow->tl.tcp, sizeof flow->tl.tcp);
-		pkt->len += sizeof flwo->tl.tcp;
+		memcpy(pkt->data + pkt->len, flow->hdr.t.tcp, sizeof flow->t.tcp);
+		pkt->len += sizeof flwo->hdr.t.tcp;
 	}
 	else if (ip->protocol == PROTOCOL_UDP) {
-		memcpy(pkt->data + pkt->len, flow->tl.tcp, sizeof flow->tl.tcp);
-		pkt->len += sizeof flwo->tl.tcp;
+		memcpy(pkt->data + pkt->len, flow->hdr.t.tcp, sizeof flow->hdr.t.tcp);
+		pkt->len += sizeof flwo->hdr.t.tcp;
 	}
 	else {
 		assert(1);	// never happen
@@ -439,7 +444,8 @@ int recv_compress(void *cpkt, void *ippkt, int size)
 
 	switch (chdr->t) {
 		case CTYPE_FRM_CTL:
-			len = recv_ctl(cpkt, ippkt, size);
+			recv_ctl(cpkt);
+			len = 0;
 			break;
 		case CTYPE_FRM_TCP:
 			len = recv_tcp(cpkt, ippkt, size);
@@ -457,12 +463,51 @@ int recv_compress(void *cpkt, void *ippkt, int size)
 	return 0;
 }
 
-int recv_ctl(void *cpkt, void *ippkt, int size)
+flow_node_t* build_rflow_by_hash(uint32_t hval, struct key *key, void *ippkt, u8 fid)
 {
-	chdr_t *chdr = (chdr_t *)cpkt;
-	int len;
+	struct iphdr *iphdr = (struct iphdr *)ippkt;
+	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof struct iphdr);
+	struct udphdr *udphdr = (struct udphdr *)(ippkt + sizeof struct iphdr);
 
-	return len;
+	flow_node_t *n;
+
+	n = xmalloc(sizeof *n);
+	n->state = STATE_NEW;
+	n->key = *key;
+	n->ip = *iphdr;
+	if (iphdr->protocol == PROTOCOL_TCP)
+		n->hdr.t.tcp = *tcphdr;
+	else if (iphdr->protocol == PROTOCOL_UDP)
+		n->hdr.t.udp = *udphdr;
+	else {
+		assert(1);	// never happen
+	}
+	n->fid = fid;
+	n->frag_id = 0;
+	n->soft_timeout = ts_msec() + SOFT_TIMEOUT_INTERVAL;
+	hmap_insert(&flow_hmap, &n->node, hval);
+}
+
+void recv_ctl(void *cpkt)
+{
+	struct orig_hdr *orig_hdr = (struct orig_hdr *)(cpkt + sizeof *chdr);
+	chdr_t *chdr = (chdr_t *)cpkt;
+	struct key key;
+
+	switch (chdr->i) {
+		case CTYPE_CTL_REQ:
+			key = get_flow_key(orig_hdr);
+			flow_hval = hash_bytes(&key, sizeof key);
+			flow = build_rflow_by_hash(flow_hval, &key, ippkt, fid);
+			break;
+		case CTYPE_CTL_ACK:
+			break;
+		case CTYPE_CTL_FLT:
+			break;
+		default:
+			assert(1);
+			break;
+	}
 }
 
 int recv_tcp(void *cpkt, void *ippkt, int size)
