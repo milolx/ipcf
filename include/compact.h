@@ -75,10 +75,22 @@ struct udphdr {
 struct {
 	u32 saddr,
 	u32 daddr,
+	u16 ipid,
+	u8  proto,
+	u8  resv,
 	u16 sport,
 	u16 dport,
+}skey_t;
+
+struct {
+	u32 saddr,
+	u32 daddr,
+	u16 ipid,
 	u8  proto,
-}__attribute__((packed)) key_t;
+	u8  resv,
+	u16 sport,
+	u16 dport,
+}__attribute__((packed)) rkey_t;
 
 #define CTYPE_FRM_CTL		0
 #define CTYPE_FRM_TCP		1
