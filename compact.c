@@ -1,3 +1,12 @@
+#include <string.h>
+#include <assert.h>
+
+#include "types.h"
+#include "list.h"
+#include "hmap.h"
+#include "compact.h"
+#include "idpool.h"
+#include "ts.h"
 
 #define MAX_DATA_LENGTH		2000
 #define SOFT_TIMEOUT_INTERVAL	(10*1000)	// in msec
@@ -15,19 +24,17 @@ typedef struct {
 #define STATE_PENDING		2
 #define STATE_ESTABLISHED	3
 	u8 state;
-	struct key key;
+	skey_t skey;
 	struct orig_hdr hdr;
 	u8 fid;		// compact-ipid, also used as index
-	u8 frag_id;	// for possible frag pkts
 	int soft_timeout;
-}flow_node_t;
+}sflow_node_t;
 
 typedef struct {
 	struct hmap_node node;
-	struct key key;
+	rkey_t rkey;
 	struct orig_hdr hdr;
 	u8 fid;		// compact-ipid, also used as index
-	u8 frag_id;	// for possible frag pkts
 	int soft_timeout;
 }rflow_node_t;
 
@@ -35,20 +42,21 @@ typedef struct {
 	struct hmap_node node;
 	u8 id;
 	u16 ipid;
-	flow_node_t *flow;
+	sflow_node_t *flow;
 }frag_node_t;
 
-struct hmap flow_hmap;
+struct hmap sflow_hmap;
+struct hmap rflow_hmap;
 struct hmap frag_hmap;
 
 idpool_t *idp;
-static flow_node_t* flow_rindex[1<<N_ID_BITS];
+static sflow_node_t* sflow_rindex[1<<N_ID_BITS];
 
 
 void compact_init()
 {
-	hmap_init(&flow_hmap);
-	hmap_init(&frag_hmap);
+	hmap_init(&sflow_hmap);
+	hmap_init(&rflow_hmap);
 
 	idp = init_idpool(1<<N_ID_BITS);
 }
@@ -56,7 +64,7 @@ void compact_init()
 frag_node_t* locate_in_frag_hmap(u16 ipid)
 {
 	frag_node_t *n;
-	uint32_t hval;
+	u32 hval;
 
 	hval = hash_bytes(&ipid, sizeof ipid);
 	HMAP_FOR_EACH_WITH_HASH(n, node, hval, &frag_hmap) {
@@ -66,17 +74,19 @@ frag_node_t* locate_in_frag_hmap(u16 ipid)
 	return NULL;
 }
 
-struct key get_flow_key(void *ippkt)
+skey_t get_sflow_key(void *ippkt)
 {
 	struct iphdr *iphdr = (struct iphdr *)ippkt;
-	struct iphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof struct iphdr);
-	struct iphdr *udphdr = (struct udphdr *)(ippkt + sizeof struct iphdr);
+	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof *iphdr);
+	struct udphdr *udphdr = (struct udphdr *)(ippkt + sizeof *iphdr);
 
-	static struct key k;
+	static skey_t k;
+
+	k.resv = 0;
 
 	k.saddr = iphdr->saddr;
 	k.daddr = iphdr->daddr;
-	k.prot = iphdr->protocol;
+	k.proto = iphdr->protocol;
 	if ((iphdr->frag_off & FRAG_FLAG_MF_MASK)
 			|| (iphdr->frag_off & FRAG_OFF_MASK)
 			|| ((iphdr->protocol != PROTOCOL_TCP)
@@ -87,13 +97,13 @@ struct key get_flow_key(void *ippkt)
 	}
 	else if (iphdr->protocol == PROTOCOL_TCP) {
 		k.ipid = 0;
-		k.sport = tcphdr->sport;
-		k.dport = tcphdr->dport;
+		k.sport = tcphdr->source;
+		k.dport = tcphdr->dest;
 	}
 	else if (iphdr->protocol == PROTOCOL_UDP) {
 		k.ipid = 0;
-		k.sport = udphdr->sport;
-		k.dport = udphdr->dport;
+		k.sport = udphdr->source;
+		k.dport = udphdr->dest;
 	}
 	else {
 		assert(1);	// never happen
@@ -102,29 +112,29 @@ struct key get_flow_key(void *ippkt)
 	return k;
 }
 
-flow_node_t* get_flow_by_hash(u32 hval, struct key key)
+sflow_node_t* get_sflow_by_hash(u32 hval, skey_t *skey)
 {
-	flow_node_t *n;
+	sflow_node_t *n;
 
-	HMAP_FOR_EACH_WITH_HASH(n, node, hval, &flow_hmap) {
-		if (n->key == key)
+	HMAP_FOR_EACH_WITH_HASH(n, node, hval, &sflow_hmap) {
+		if (!memcmp(&n->skey, skey, sizeof *skey))
 			return n;
 	}
 	return NULL;
 }
 
-flow_node_t* build_flow_by_hash(uint32_t hval, struct key *key, void *ippkt, u8 fid)
+sflow_node_t* build_sflow_by_hash(u32 hval, skey_t *skey, void *ippkt, u8 fid)
 {
 	struct iphdr *iphdr = (struct iphdr *)ippkt;
-	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof struct iphdr);
-	struct udphdr *udphdr = (struct udphdr *)(ippkt + sizeof struct iphdr);
+	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof *iphdr);
+	struct udphdr *udphdr = (struct udphdr *)(ippkt + sizeof *iphdr);
 
-	flow_node_t *n;
+	sflow_node_t *n;
 
 	n = xmalloc(sizeof *n);
 	n->state = STATE_NEW;
-	n->key = *key;
-	n->ip = *iphdr;
+	n->skey = *skey;
+	n->hdr.ip = *iphdr;
 	if (iphdr->protocol == PROTOCOL_TCP)
 		n->hdr.t.tcp = *tcphdr;
 	else if (iphdr->protocol == PROTOCOL_UDP)
@@ -132,26 +142,10 @@ flow_node_t* build_flow_by_hash(uint32_t hval, struct key *key, void *ippkt, u8 
 
 	n->fid = fid;
 	n->soft_timeout = ts_msec() + SOFT_TIMEOUT_INTERVAL;
-	hmap_insert(&flow_hmap, &n->node, hval);
+	hmap_insert(&sflow_hmap, &n->node, hval);
 }
 
-frag_node_t* build_frag_hmap(u16 ipid, flow_node_t* flow)
-{
-	frag_node_t *n;
-	uint32_t h;
-
-	h = hash_bytes(&ipid, sizeof ipid);
-
-	n = xmalloc(sizeof *n);
-	n->id = flow->frag_id++ % (1<N_FRAG_ID_BITS);
-	n->ipid = ipid;
-	n->flow = flow;
-	hmap_insert(&frag_hmap, &n->node, h);
-
-	return n;
-}
-
-void touch_flow(flow_node_t* flow)
+void touch_flow(sflow_node_t* flow)
 {
 	flow->soft_timeout = ts_msec() + SOFT_TIMEOUT_INTERVAL;
 }
@@ -166,105 +160,107 @@ void add_to_pkt_list(struct list *pkt_list, void *data, u16 len)
 	list_push_back(pkt_list, &pkt->node);
 }
 
-void build_ctl(struct list *pkt_list, flow_node_t *flow)
+void build_ctl(struct list *pkt_list, sflow_node_t *sflow)
 {
 	pkt_t *pkt;
 	chdr_t *ctl_hdr;
 
 	pkt = xmalloc(sizeof *pkt);
-	ctl_hdr = pkt->data;
+	ctl_hdr = (chdr_t *)pkt->data;
 	ctl_hdr->t = CTYPE_FRM_CTL;
 	ctl_hdr->i = CTYPE_CTL_REQ;
 	ctl_hdr->smac = MYMAC;
-	ctl_hdr->id = flow->fid;
+	ctl_hdr->id = sflow->fid;
 	pkt->len = sizeof *ctl_hdr;
-	memcpy(pkt->data + pkt->len, flow->ip, sizeof flow->ip);
-	pkt->len += sizeof flwo->ip;
-	if (ip->protocol == PROTOCOL_TCP) {
-		memcpy(pkt->data + pkt->len, flow->hdr.t.tcp, sizeof flow->t.tcp);
-		pkt->len += sizeof flwo->hdr.t.tcp;
+	memcpy(pkt->data + pkt->len, &sflow->hdr.ip, sizeof sflow->hdr.ip);
+	pkt->len += sizeof sflow->hdr.ip;
+	if (sflow->hdr.ip.protocol == PROTOCOL_TCP) {
+		memcpy(pkt->data + pkt->len, &sflow->hdr.t.tcp, sizeof sflow->hdr.t.tcp);
+		pkt->len += sizeof sflow->hdr.t.tcp;
 	}
-	else if (ip->protocol == PROTOCOL_UDP) {
-		memcpy(pkt->data + pkt->len, flow->hdr.t.tcp, sizeof flow->hdr.t.tcp);
-		pkt->len += sizeof flwo->hdr.t.tcp;
+	else if (sflow->hdr.ip.protocol == PROTOCOL_UDP) {
+		memcpy(pkt->data + pkt->len, &sflow->hdr.t.tcp, sizeof sflow->hdr.t.tcp);
+		pkt->len += sizeof sflow->hdr.t.tcp;
 	}
 
 	list_push_back(pkt_list, &pkt->node);
 }
 
-void build_normal(struct list *pkt_list, flow_node_t *flow, void *ippkt)
+void build_cpkt(struct list *pkt_list, sflow_node_t *sflow, void *ippkt)
 {
 	struct iphdr *iphdr = (struct iphdr *)ippkt;
-	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof struct iphdr);
-	struct udphdr *udphdr = (struct udphdr *)(ippkt + sizeof struct iphdr);
+	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof *iphdr);
+	struct udphdr *udphdr = (struct udphdr *)(ippkt + sizeof *iphdr);
 
 	pkt_t *pkt;
-	chdr_t *common_hdr;
+	chdr_t *chdr;
 
 	pkt = xmalloc(sizeof *pkt);
-	common_hdr = pkt->data;
-	common_hdr->i = 0;
-	common_hdr->smac = MYMAC;
-	common_hdr->id = flow->fid;
-	pkt->len = sizeof *common_hdr;
+	chdr = (chdr_t *)pkt->data;
+	chdr->i = 0;
+	chdr->smac = MYMAC;
+	chdr->id = sflow->fid;
+	pkt->len = sizeof *chdr;
 
-	if (flow->key.ipid) {
-		u16 frag_off;
+	if (sflow->skey.ipid) {
+		chdr->t = CTYPE_FRM_RAW;
 
-		common_hdr->t = CTYPE_FRM_RAW;
-
-		if ((iphdr->frag_off & FRAG_FLAG_MF_MASK)
-				|| (iphdr->frag_off & FRAG_OFF_MASK))
-			common_hdr->i |= CTYPE_RAW_FBIT;
 		if (iphdr->frag_off & FRAG_FLAG_MF_MASK)
-			common_hdr->i |= CTYPE_RAW_MFBIT;
+			chdr->i |= CTYPE_RAW_MFBIT;
+		if (iphdr->frag_off & FRAG_OFF_MASK) {
+			u16 frag_off;
 
-		frag_off = iphdr->frag_off & FRAG_OFF_MASK;
-		memcpy(pkt->data + pkt->len, &frag_off, sizeof frag_off);
-		pkt->len += sizeof frag_off;
+			chdr->i |= CTYPE_RAW_FBIT;
+
+			frag_off = iphdr->frag_off & FRAG_OFF_MASK;
+			memcpy(pkt->data + pkt->len, &frag_off, sizeof frag_off);
+			pkt->len += sizeof frag_off;
+		}
 
 		memcpy(pkt->data + pkt->len,
-				ippkt + sizeof *iphdr
+				ippkt + sizeof *iphdr,
 				iphdr->tot_len - sizeof *iphdr);
 		pkt->len += iphdr->tot_len - sizeof *iphdr;
 
 		list_push_back(pkt_list, &pkt->node);
 	}
 	else if (iphdr->protocol == PROTOCOL_TCP) {
-		common_hdr->t = CTYPE_FRM_TCP;
+		chdr->t = CTYPE_FRM_TCP;
 
 		if (tcphdr->urg) {
 			if (tcphdr->syn)
-				common_hdr->i |= CTYPE_TCP_URGSYN;
+				chdr->i |= CTYPE_TCP_URGSYN;
 			else if (tcphdr->fin)
-				common_hdr->i |= CTYPE_TCP_URGFIN;
+				chdr->i |= CTYPE_TCP_URGFIN;
 			else if (tcphdr->psh)
-				common_hdr->i |= CTYPE_TCP_URGPSH;
+				chdr->i |= CTYPE_TCP_URGPSH;
 			else
-				common_hdr->i |= CTYPE_TCP_URG;
+				chdr->i |= CTYPE_TCP_URG;
 		}
 		else {
 			if (tcphdr->syn)
-				common_hdr->i |= CTYPE_TCP_SYN;
+				chdr->i |= CTYPE_TCP_SYN;
 			else if (tcphdr->fin)
-				common_hdr->i |= CTYPE_TCP_FIN;
+				chdr->i |= CTYPE_TCP_FIN;
 			else if (tcphdr->psh)
-				common_hdr->i |= CTYPE_TCP_PSH;
+				chdr->i |= CTYPE_TCP_PSH;
+			else if (tcphdr->rst)
+				chdr->i |= CTYPE_TCP_RST;
 			else
 				assert(1);
 		}
 
-		common_hdr->i |= CTYPE_TCP_SBIT;
+		chdr->i |= CTYPE_TCP_SBIT;
 		memcpy(pkt->data + pkt->len, &tcphdr->seq, sizeof tcphdr->seq);
 		pkt->len += sizeof tcphdr->seq;
 
 		if (tcphdr->ack) {
-			common_hdr->i |= CTYPE_TCP_ABIT;
+			chdr->i |= CTYPE_TCP_ABIT;
 			memcpy(pkt->data + pkt->len, &tcphdr->ack_seq, sizeof tcphdr->ack_seq);
 			pkt->len += sizeof tcphdr->ack_seq;
 		}
 
-		common_hdr->i |= CTYPE_TCP_WBIT;
+		chdr->i |= CTYPE_TCP_WBIT;
 		memcpy(pkt->data + pkt->len, &tcphdr->window, sizeof tcphdr->window);
 		pkt->len += sizeof tcphdr->window;
 
@@ -278,18 +274,18 @@ void build_normal(struct list *pkt_list, flow_node_t *flow, void *ippkt)
 
 		memcpy(pkt->data + pkt->len,
 				ippkt + sizeof *iphdr + sizeof *tcphdr,
-				iphdr->tot_len - ippkt + sizeof *iphdr + sizeof *tcphdr);
+				iphdr->tot_len - sizeof *iphdr - sizeof *tcphdr);
 		pkt->len += iphdr->tot_len - sizeof *iphdr - sizeof *tcphdr;
 	}
 	else if (iphdr->protocol == PROTOCOL_UDP) {
-		common_hdr->t = CTYPE_FRM_UDP;
+		chdr->t = CTYPE_FRM_UDP;
 
 		memcpy(pkt->data + pkt->len, &udphdr->check, sizeof udphdr->check);
 		pkt->len += sizeof udphdr->check;
 
 		memcpy(pkt->data + pkt->len,
 				ippkt + sizeof *iphdr + sizeof *udphdr,
-				iphdr->tot_len - ippkt + sizeof *iphdr + sizeof *udphdr);
+				iphdr->tot_len - sizeof *iphdr - sizeof *udphdr);
 		pkt->len += iphdr->tot_len - sizeof *iphdr - sizeof *udphdr;
 	}
 	else {
@@ -299,48 +295,16 @@ void build_normal(struct list *pkt_list, flow_node_t *flow, void *ippkt)
 	list_push_back(pkt_list, &pkt->node);
 }
 
-void build_frag(struct list *pkt_list, frag_node_t *frag, void *ippkt)
-{
-	struct iphdr *iphdr = (struct iphdr *)ippkt;
-
-	pkt_t *pkt;
-	chdr_t *common_hdr;
-
-	pkt = xmalloc(sizeof *pkt);
-	common_hdr->t = CTYPE_FRM_RAW;
-	common_hdr = pkt->data;
-	common_hdr->i = 0;
-	common_hdr->smac = MYMAC;
-	common_hdr->id = flow->fid;
-	pkt->len = sizeof *common_hdr;
-
-	common_hdr->i |= CTYPE_RAW_FBIT;
-	if (iphdr->frag_off & FRAG_FLAG_MF_MASK)
-		common_hdr->i |= CTYPE_RAW_MFBIT;
-	common_hdr->i |= frag->id;
-
-	memcpy(pkt->data + pkt->len,
-		&iphdr->frag_off & FRAG_OFF_MASK,
-		sizeof iphdr->frag_off);
-	pkt->len += sizeof iphdr->frag_off;
-
-	memcpy(pkt->data + pkt->len,
-			ippkt + sizeof *iphdr
-			iphdr->tot_len - sizeof *iphdr);
-	pkt->len += iphdr->tot_len - sizeof *iphdr;
-
-	list_push_back(pkt_list, &pkt->node);
-}
-
 void timer_event()
 {
-	flow_node_t *flow;
+	sflow_node_t *flow;
 	long long int now = ts_msec();
 
-	HMAP_FOR_EACH(flow, node, &flow_hmap) {
+	HMAP_FOR_EACH(flow, node, &sflow_hmap) {
 		if (now < flow->soft_timeout)
 			continue;
 
+		/*
 		// timeout
 		switch (flow->state) {
 			case STATE_NEW:
@@ -356,16 +320,19 @@ void timer_event()
 			default:
 				break;
 		}
+		*/
 	}
 }
 
 void xmit_compress(void *ippkt, struct list *pkt_list)
 {
 	struct iphdr *iphdr = (struct iphdr *)ippkt;
-	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof struct iphdr);
-	struct udphdr *udphdr = (struct udphdr *)(ippkt + sizeof struct iphdr);
+	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof *iphdr);
+	struct udphdr *udphdr = (struct udphdr *)(ippkt + sizeof *iphdr);
 
-	flow_node_t *flow;
+	skey_t skey;
+	u32 hval;
+	sflow_node_t *sflow;
 
 	list_init(pkt_list);
 
@@ -378,110 +345,104 @@ void xmit_compress(void *ippkt, struct list *pkt_list)
 		goto can_not_compact;
 	}
 
-	flow = NULL;
+	sflow = NULL;
 
 	// the actrual key for hash is frag-or-not related
-	key = get_flow_key(ippkt);
-	hval = hash_bytes(&key, sizeof key);
+	skey = get_sflow_key(ippkt);
+	hval = hash_bytes(&skey, sizeof skey);
 
-	flow = get_flow_by_hash(hval, key);
+	sflow = get_sflow_by_hash(hval, &skey);
 
-	if (!flow) {	// new flow
-		u16 k;
+	if (!sflow) {	// new flow
 		u8 fid;
 
 		fid = get_id(idp);
 		// reverse-locate flow entry also via fid
 
-		flow = build_flow_by_hash(hval, &key, ippkt, fid);
-		flow_rindex[fid] = flow;
+		sflow = build_sflow_by_hash(hval, &skey, ippkt, fid);
+		sflow_rindex[fid] = sflow;
 	}
 
-	assert(flow);
+	assert(sflow);
 
-	switch (flow->state) {
+	switch (sflow->state) {
 		case STATE_NEW:
-			build_ctl(pkt_list, flow);
+			build_ctl(pkt_list, sflow);
 			add_to_pkt_list(pkt_list, ippkt, iphdr->tot_len);
-			flow->state = STATE_PENDING;
+			sflow->state = STATE_PENDING;
 			break;
 		case STATE_PENDING:
 			add_to_pkt_list(pkt_list, ippkt, iphdr->tot_len);
 			break;
 		case STATE_ESTABLISHED:
-			if (iphdr->frag_off & FRAG_OFF_MASK) {
-				build_frag(pkt_list, frag, ippkt);
-			}
-			else {
-			}
-			cpkt = build(pkt);
-			send(cpkt);
+			build_cpkt(pkt_list, sflow, ippkt);
 			break;
 		default:
 			assert(1);	// never happen
 			break;
 	}
 
-	touch_flow(flow);
+	touch_flow(sflow);
 	return;
 
 can_not_compact:
 	add_to_pkt_list(pkt_list, ippkt, iphdr->tot_len);
 }
 
-// return actural length in ippkt
-int recv_compress(void *cpkt, void *ippkt, int size)
+rflow_node_t* get_rflow_by_hash(u32 hval, rkey_t *rkey)
 {
-	struct iphdr *iphdr = (struct iphdr *)cpkt;
-	chdr_t *chdr = (chdr_t *)cpkt;
+	rflow_node_t *n;
 
-	flow_node_t *flow;
-	int len;
-
-	list_init(pkt_list);
-
-	if (iphdr->version == 4 && iphdr->ihl >= 5) {
-		if (!csum(iphdr, sizeof *iphdr)) {
-			// ipv4
-			len = size >= iphdr->tot_len ? iphdr->tot_len:size;
-			memcpy(ippkt, cpkt, len);
-			return len;
-		}
+	HMAP_FOR_EACH_WITH_HASH(n, node, hval, &rflow_hmap) {
+		if (!memcmp(&n->rkey, rkey, sizeof *rkey))
+			return n;
 	}
-
-	switch (chdr->t) {
-		case CTYPE_FRM_CTL:
-			recv_ctl(cpkt);
-			len = 0;
-			break;
-		case CTYPE_FRM_TCP:
-			len = recv_tcp(cpkt, ippkt, size);
-			break;
-		case CTYPE_FRM_UDP:
-			len = recv_udp(cpkt, ippkt, size);
-			break;
-		case CTYPE_FRM_RAW:
-			len = recv_raw(cpkt, ippkt, size);
-			break;
-		default:
-			assert(1);
-	}
-
-	return 0;
+	return NULL;
 }
 
-flow_node_t* build_rflow_by_hash(uint32_t hval, struct key *key, void *ippkt, u8 fid)
+pkt_t* recv_untouched_ip(void *ippkt)
 {
 	struct iphdr *iphdr = (struct iphdr *)ippkt;
-	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof struct iphdr);
-	struct udphdr *udphdr = (struct udphdr *)(ippkt + sizeof struct iphdr);
+	pkt_t *pkt;
+	u16 len;
 
-	flow_node_t *n;
+	pkt = xmalloc(sizeof *pkt);
+	len = iphdr->tot_len <= MAX_DATA_LENGTH ? iphdr->tot_len:MAX_DATA_LENGTH;
+	memcpy(pkt->data, ippkt, len);
+	pkt->len = len;
+
+	return pkt;
+}
+
+pkt_t* build_ack(void *cpkt)
+{
+	chdr_t *chdr = (chdr_t *)cpkt;
+	pkt_t *pkt;
+	chdr_t *ctl_hdr;
+
+	pkt = xmalloc(sizeof *pkt);
+	ctl_hdr = (chdr_t *)pkt->data;
+	ctl_hdr->t = CTYPE_FRM_CTL;
+	ctl_hdr->i = CTYPE_CTL_ACK;
+	ctl_hdr->smac = chdr->smac;
+	ctl_hdr->id = chdr->id;
+	pkt->len = sizeof *ctl_hdr;
+
+	return pkt;
+}
+
+rflow_node_t* build_rflow_by_hash(uint32_t hval, rkey_t *rkey, void *cpkt)
+{
+	chdr_t *chdr = (chdr_t *)cpkt;
+	struct iphdr *iphdr = (struct iphdr *)(cpkt + sizeof *chdr);
+	struct tcphdr *tcphdr = (struct tcphdr *)(cpkt + sizeof *chdr + sizeof *iphdr);
+	struct udphdr *udphdr = (struct udphdr *)(cpkt + sizeof *chdr + sizeof *iphdr);
+
+	rflow_node_t *n;
 
 	n = xmalloc(sizeof *n);
-	n->state = STATE_NEW;
-	n->key = *key;
-	n->ip = *iphdr;
+	n->rkey = *rkey;
+	n->hdr.ip = *iphdr;
 	if (iphdr->protocol == PROTOCOL_TCP)
 		n->hdr.t.tcp = *tcphdr;
 	else if (iphdr->protocol == PROTOCOL_UDP)
@@ -489,53 +450,238 @@ flow_node_t* build_rflow_by_hash(uint32_t hval, struct key *key, void *ippkt, u8
 	else {
 		assert(1);	// never happen
 	}
-	n->fid = fid;
-	n->frag_id = 0;
+	n->fid = chdr->id;
 	n->soft_timeout = ts_msec() + SOFT_TIMEOUT_INTERVAL;
-	hmap_insert(&flow_hmap, &n->node, hval);
+	hmap_insert(&rflow_hmap, &n->node, hval);
 }
 
-void recv_ctl(void *cpkt)
+rkey_t get_rflow_key(chdr_t *chdr)
 {
-	struct orig_hdr *orig_hdr = (struct orig_hdr *)(cpkt + sizeof *chdr);
-	chdr_t *chdr = (chdr_t *)cpkt;
-	struct key key;
+	static rkey_t k;
 
-	switch (chdr->i) {
-		case CTYPE_CTL_REQ:
-			key = get_flow_key(orig_hdr);
-			hval = hash_bytes(&key, sizeof key);
-			flow = build_rflow_by_hash(hval, &key, ippkt, fid);
+	k.smac = chdr->smac;
+	k.id = chdr->id;
+
+	return k;
+}
+
+pkt_t* recv_tcp(void *cpkt, u16 len, rflow_node_t *rflow)
+{
+	chdr_t *chdr = (chdr_t *)cpkt;
+	pkt_t *pkt;
+	struct iphdr *iphdr;
+	struct tcphdr *tcphdr;
+	int offset;
+
+	rflow->hdr.ip.id ++;	// make it diff... in fact, any num is fine
+
+	pkt = xmalloc(sizeof *pkt);
+	iphdr = (struct iphdr *)pkt->data;
+	memcpy(iphdr, &rflow->hdr.ip, sizeof *iphdr);
+	tcphdr = (struct tcphdr *)(pkt->data + sizeof *iphdr);
+	memcpy(tcphdr, &rflow->hdr.ip, sizeof *tcphdr);
+
+	pkt->len = sizeof *iphdr + sizeof *tcphdr;
+
+	offset = sizeof *chdr;
+
+	if (chdr->i & CTYPE_TCP_SBIT) {
+		memcpy(&tcphdr->seq, cpkt + offset, sizeof tcphdr->seq);
+		offset += tcphdr->seq;
+	}
+
+	if (chdr->i & CTYPE_TCP_ABIT) {
+		tcphdr->ack = 1;
+		memcpy(&tcphdr->ack_seq, cpkt + offset, sizeof tcphdr->ack_seq);
+		offset += tcphdr->ack_seq;
+	}
+	else
+		tcphdr->ack = 0;
+
+	if (chdr->i & CTYPE_TCP_WBIT) {
+		memcpy(&tcphdr->window, cpkt + offset, sizeof tcphdr->window);
+		offset += tcphdr->window;
+	}
+
+	if (!(chdr->i & CTYPE_TCP_SBMASK)
+			|| ((chdr->i & CTYPE_TCP_SBMASK) >= CTYPE_TCP_URGSYN)) {
+		tcphdr->urg = 1;
+		memcpy(&tcphdr->urg_ptr, cpkt + offset, sizeof tcphdr->urg_ptr);
+		offset += tcphdr->urg_ptr;
+	}
+	else
+		tcphdr->urg = 0;
+
+	memcpy(&tcphdr->check, cpkt + offset, sizeof tcphdr->check);
+	offset += tcphdr->check;
+
+	memcpy(pkt->data + sizeof *iphdr + sizeof *tcphdr,
+			cpkt + offset,
+			len - offset);
+	pkt->len += len - offset;
+
+	tcphdr->syn = tcphdr->fin = tcphdr->psh = tcphdr->rst = 0;
+	switch (chdr->i & CTYPE_TCP_SBMASK) {
+		case CTYPE_TCP_SYN:
+		case CTYPE_TCP_URGSYN:
+			tcphdr->syn = 1;
 			break;
-		case CTYPE_CTL_ACK:
+		case CTYPE_TCP_FIN:
+		case CTYPE_TCP_URGFIN:
+			tcphdr->fin = 1;
 			break;
-		case CTYPE_CTL_FLT:
+		case CTYPE_TCP_PSH:
+		case CTYPE_TCP_URGPSH:
+			tcphdr->psh = 1;
+			break;
+		case CTYPE_TCP_RST:
+			tcphdr->rst = 1;
+			break;
+		case CTYPE_TCP_URG:
+			// do nothing(we have set)
+			break;
+		default:
+			break;
+	}
+
+	iphdr->tot_len = pkt->len;
+	iphdr->check = 0;
+	iphdr->check = csum(iphdr, sizeof *iphdr);
+
+	return pkt;
+}
+
+pkt_t* recv_udp(void *cpkt, u16 len, rflow_node_t *rflow)
+{
+	chdr_t *chdr = (chdr_t *)cpkt;
+	pkt_t *pkt;
+	struct iphdr *iphdr;
+	struct udphdr *udphdr;
+	int offset;
+
+	rflow->hdr.ip.id ++;	// make it diff... in fact, any num is fine
+
+	pkt = xmalloc(sizeof *pkt);
+	iphdr = (struct iphdr *)pkt->data;
+	memcpy(iphdr, &rflow->hdr.ip, sizeof *iphdr);
+	udphdr = (struct udphdr *)(pkt->data + sizeof *iphdr);
+	memcpy(udphdr, &rflow->hdr.ip, sizeof *udphdr);
+
+	pkt->len = sizeof *iphdr + sizeof *udphdr;
+
+	offset = sizeof *chdr;
+
+	memcpy(&udphdr->check, cpkt + offset, sizeof udphdr->check);
+	offset += sizeof udphdr->check;
+
+	memcpy(pkt->data + sizeof *iphdr + sizeof *udphdr,
+			cpkt + offset,
+			len - offset);
+	pkt->len += len - offset;
+
+	iphdr->tot_len = pkt->len;
+	iphdr->check = 0;
+	iphdr->check = csum(iphdr, sizeof *iphdr);
+
+	return pkt;
+}
+
+pkt_t* recv_raw(void *cpkt, u16 len, rflow_node_t *rflow)
+{
+	chdr_t *chdr = (chdr_t *)cpkt;
+	pkt_t *pkt;
+	struct iphdr *iphdr;
+	int offset;
+
+	// use the exact same ip-id
+
+	pkt = xmalloc(sizeof *pkt);
+	iphdr = (struct iphdr *)pkt->data;
+	memcpy(iphdr, &rflow->hdr.ip, sizeof *iphdr);
+
+	pkt->len = sizeof *iphdr;
+
+	offset = sizeof *chdr;
+
+	iphdr->frag_off = 0;
+	if (chdr->i & CTYPE_RAW_FBIT) {
+		memcpy(&iphdr->frag_off, cpkt + offset, sizeof iphdr->frag_off);
+		iphdr->frag_off &= FRAG_OFF_MASK;
+		offset += sizeof iphdr->frag_off;
+	}
+	if (chdr->i & CTYPE_RAW_MFBIT) {
+		iphdr->frag_off |= FRAG_FLAG_MF_MASK;
+	}
+
+	memcpy(pkt->data + sizeof *iphdr, cpkt + offset, len - offset);
+	pkt->len += len - offset;
+
+	iphdr->tot_len = pkt->len;
+	iphdr->check = 0;
+	iphdr->check = csum(iphdr, sizeof *iphdr);
+
+	return pkt;
+}
+
+// return 0 on success
+int recv_compress(void *cpkt, int len, pkt_t *ippkt, pkt_t *send_back_pkt)
+{
+	struct iphdr *iphdr = (struct iphdr *)cpkt;
+	chdr_t *chdr = (chdr_t *)cpkt;
+
+	rflow_node_t *rflow;
+	rkey_t rkey;
+	uint32_t hval;
+
+	send_back_pkt = NULL;
+
+	if (iphdr->version == 4 && iphdr->ihl >= 5) {
+		if (!csum(iphdr, sizeof *iphdr)) {
+			// ipv4
+			ippkt = recv_untouched_ip(cpkt);
+			return 0;
+		}
+	}
+
+	rkey = get_rflow_key(chdr);
+	hval = hash_bytes(&rkey, sizeof rkey);
+	rflow = get_rflow_by_hash(hval, &rkey);
+
+	if (!rflow) {	// new flow
+		rflow = build_rflow_by_hash(hval, &rkey, cpkt);
+	}
+
+	assert(rflow);
+
+	switch (chdr->t) {
+		case CTYPE_FRM_CTL:
+			switch (chdr->i) {
+				case CTYPE_CTL_REQ:
+					send_back_pkt = build_ack(cpkt);
+					break;
+				case CTYPE_CTL_ACK:
+					sflow_rindex[chdr->id]->state = STATE_ESTABLISHED;
+					break;
+				case CTYPE_CTL_FLT:
+					break;
+				default:
+					assert(0);
+					break;
+			}
+			break;
+		case CTYPE_FRM_TCP:
+			ippkt = recv_tcp(cpkt, len, rflow);
+			break;
+		case CTYPE_FRM_UDP:
+			ippkt = recv_udp(cpkt, len, rflow);
+			break;
+		case CTYPE_FRM_RAW:
+			ippkt = recv_raw(cpkt, len, rflow);
 			break;
 		default:
 			assert(1);
-			break;
 	}
-}
 
-int recv_tcp(void *cpkt, void *ippkt, int size)
-{
-	chdr_t *chdr = (chdr_t *)cpkt;
-	int len;
-
-	return len;
-}
-int recv_udp(void *cpkt, void *ippkt, int size)
-{
-	chdr_t *chdr = (chdr_t *)cpkt;
-	int len;
-
-	return len;
-}
-int recv_raw(void *cpkt, void *ippkt, int size)
-{
-	chdr_t *chdr = (chdr_t *)cpkt;
-	int len;
-
-	return len;
+	return 0;
 }
 
