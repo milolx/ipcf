@@ -66,7 +66,7 @@ list_pop_back(struct list *list)
 struct list *
 list_front(const struct list *list)
 {
-#ifdef __DEBUG__
+#ifdef __DEBUG_LIST__
     if (list_is_empty(list))
 	    printf("err(list_front): empty list\n");
 #endif
@@ -76,7 +76,7 @@ list_front(const struct list *list)
 struct list *
 list_back(const struct list *list)
 {
-#ifdef __DEBUG__
+#ifdef __DEBUG_LIST__
     if (list_is_empty(list))
 	    printf("err(list_back): empty list\n");
 #endif

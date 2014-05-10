@@ -23,13 +23,19 @@ static inline void _lock_init(light_lock_t *lock)
 	__atomic_store_n(&lock->cnt, 0, __ATOMIC_SEQ_CST);
 }
 
+static inline void _lock_destroy(light_lock_t *lock)
+{
+	__atomic_store_n(&lock->cnt, 0, __ATOMIC_SEQ_CST);
+	sem_destroy(&lock->sem);
+}
+
 static inline void _lock(light_lock_t *lock)
 {
 	if (__atomic_fetch_add(&lock->cnt, 1, __ATOMIC_ACQUIRE) > 0)
 		sem_wait(&lock->sem);
 }
 
-static inline void _release(light_lock_t *lock)
+static inline void _unlock(light_lock_t *lock)
 {
 	if (__atomic_sub_fetch(&lock->cnt, 1, __ATOMIC_RELEASE) > 0)
 		sem_post(&lock->sem);
