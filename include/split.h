@@ -1,9 +1,29 @@
 #ifndef __SPLIT_H__
 #define __SPLIT_H__
 
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+#include <strings.h>
+#include "list.h"
+#include "atomic.h"
+
+typedef uint8_t		u8;
+typedef uint16_t	u16;
+typedef uint32_t	u32;
+
 #define NUM_OF_SE	256	// max num of r/s sessions, 8-bit mac as key
 #define LINK_MTU	1000
 #define SLICE_DATA_LEN	32
+#define IDLE_TIMEOUT	(10 * 1000)	// in ms
+#define ACK_TIMEOUT	(3 * 1000)	// in ms
+#define MAX_RETRY_TIMES	3
+
+#define FRM_MSG_HDR_LEN	(sizeof(frm_hdr_t) + sizeof(msg_hdr_t))
+#define LINK_DATA_MAX	(LINK_MTU - FRM_MSG_HDR_LEN)
+#define MAX_SLICE_NUM	((LINK_MTU - FRM_MSG_HDR_LEN - 2)/sizeof(slice_t))		// should <=256
+#define BITMAP32_SIZE	((MAX_SLICE_NUM+31)/32)
+
 
 #define BREAK_CHAR	0xc0
 #define ESCAPE_CHAR	0xdb
@@ -41,7 +61,7 @@ typedef struct {
 
 typedef struct {
 	u8 mac;		// remote mac
-}key_t;
+}se_key_t;
 
 typedef struct {
 	struct list link;
@@ -55,7 +75,7 @@ typedef struct {
 	struct list link;
 	u16 len;
 	u8 data[LINK_MTU];
-}recv_node_t;
+}data_node_t;
 
 typedef struct {
 	light_lock_t lock;
@@ -79,9 +99,12 @@ typedef struct {
 	bool completed;
 }rse_t;	//recv session
 
-#define FRM_MSG_HDR_LEN	(sizeof(frm_hdr_t) + sizeof(msg_hdr_t))
-#define LINK_DATA_MAX	(LINK_MTU - FRM_MSG_HDR_LEN)
-#define MAX_SLICE_NUM	((LINK_MTU - FRM_MSG_HDR_LEN - 2)/sizeof(slice_t))		// should <=256
-#define BITMAP32_SIZE	((MAX_SLICE_NUM+31)/32)
+void proc_timer(void);
+int upper_send(u8 dmac, u8 smac, void *msg, int msglen);
+int upper_recv(u8 *buf, int *len);
+int lower_fetch(u8 *buf, int *len);
+int lower_put(void *raw_frm, int rawlen);
+void split_init();
+void split_cleanup();
 
 #endif /* __SPLIT_H__ */

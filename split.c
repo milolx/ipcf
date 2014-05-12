@@ -1,6 +1,10 @@
-sse_t sse[NUM_OF_SE];	// send sessions, 8-bit key
+#include "atomic.h"
+#include "split.h"
+#include "ts.h"
+
+sse_t *sse[NUM_OF_SE];	// send sessions, 8-bit key
 light_lock_t sse_lock;
-rse_t rse[NUM_OF_SE];	// recv sessions, 8-bit key
+rse_t *rse[NUM_OF_SE];	// recv sessions, 8-bit key
 light_lock_t rse_lock;
 
 struct list upper_recv_list;
@@ -12,7 +16,7 @@ light_lock_t lower_send_lock;
 /*
  * return value:
  *   -1		frm size's too small
- * >= 0		actual length in buf
+ * >= 0		actual length in frm
  * 
  * save to *data_len of actual length in data have been escaped
  */
@@ -136,16 +140,22 @@ out:
 	return len;
 }
 
-static void fill_slice_k(u8 k, void *from, int len, void *dest)
+static u8 csum8(void *d, int len)
+{
+	return 0;
+}
+
+static u16 csum16(void *d, int len)
+{
+	return 0;
+}
+
+static void fill_slice_k(u8 k, void *from, u8 len, void *dest)
 {
 	slice_t *slice = (slice_t *)dest;
-	u8 len;
 
 	slice->sep = SLICE_SEPERATOR;
 	slice->seq = k;
-	len = SLICE_DATA_LEN * (k+1) < msglen ?
-		SLICE_DATA_LEN : (msglen - SLICE_DATA_LEN * seq);
-	memcpy(slice->data, msg + SLICE_DATA_LEN*k, len);
 	memcpy(slice->data, from, len);
 	if (len < SLICE_DATA_LEN)
 		bzero(slice->data + len, SLICE_DATA_LEN - len);
@@ -181,6 +191,8 @@ static int fill_slices(void *dest, int size, void *msg, int *msglen)
 
 static void set_bit(u32 *map, u8 k)
 {
+	u8 i;
+
 	u8 offset = k>>5;	// div 32
 	i = k & 0x1f;		// mod 32
 	map[offset] |= 1L << i;
@@ -188,6 +200,8 @@ static void set_bit(u32 *map, u8 k)
 
 static void clr_bit(u32 *map, u8 k)
 {
+	u8 i;
+
 	u8 offset = k>>5;	// div 32
 	i = k & 0x1f;		// mod 32
 	map[offset] &= ~(1L << i);
@@ -236,21 +250,12 @@ static bool test_all_bits_set(u32 *map, u8 n)
 static void clr_all_bits(rse_t *se)
 {
 	int i;
-	for (i=0; i<sizeof se->bitmap; ++i)
+	//for (i=0; i<sizeof se->bitmap; ++i)
+	for (i=0; i<BITMAP32_SIZE; ++i)
 		se->bitmap[i] = 0;
 }
 
-static u8 csum8(void *d, int len)
-{
-	return 0;
-}
-
-static u8 csum16(void *d, int len)
-{
-	return 0;
-}
-
-static sse_t *get_sse(key_t *k)
+static sse_t *get_sse(se_key_t *k)
 {
 	sse_t *se;
 
@@ -258,12 +263,12 @@ static sse_t *get_sse(key_t *k)
 	se = sse[k->mac];
 	_unlock(&sse_lock);
 
-	se->idle_timeout = time_msec() + IDLE_TIMEOUT;
+	se->idle_timeout = ts_msec() + IDLE_TIMEOUT;
 
 	return se;
 }
 
-static sse_t *remove_sse(key_t *k)
+static sse_t *remove_sse(se_key_t *k)
 {
 	sse_t *se;
 
@@ -284,14 +289,14 @@ static sse_t *remove_sse(key_t *k)
 	_unlock(&sse_lock);
 }
 
-static sse_t *create_sse(key_t *k, send_node_t *n)
+static sse_t *create_sse(se_key_t *k)
 {
 	sse_t *se = (sse_t *)xmalloc(sizeof *se);
 	sse_t *oldse;
 	int i;
 
 	_lock_init(&se->lock);
-	se->idle_timeout = time_msec() + IDLE_TIMEOUT;
+	se->idle_timeout = ts_msec() + IDLE_TIMEOUT;
 	se->ack_timeout = -1;
 	se->retry = 0;
 	se->is_waiting = false;
@@ -323,7 +328,7 @@ static sse_t *create_sse(key_t *k, send_node_t *n)
 	return se;
 }
 
-static rse_t *get_rse(key_t *k)
+static rse_t *get_rse(se_key_t *k)
 {
 	rse_t *se;
 
@@ -331,12 +336,12 @@ static rse_t *get_rse(key_t *k)
 	se = rse[k->mac];
 	_unlock(&rse_lock);
 
-	se->idle_timeout = time_msec() + IDLE_TIMEOUT;
+	se->idle_timeout = ts_msec() + IDLE_TIMEOUT;
 
 	return se;
 }
 
-static rse_t *remove_rse(key_t *k)
+static rse_t *remove_rse(se_key_t *k)
 {
 	rse_t *se;
 
@@ -356,8 +361,7 @@ static void reset_rse(rse_t *se)
 	int i;
 
 	if (se) {
-		for (i=0; i<sizeof se->bitmap; ++i)
-			se->bitmap[i] = 0;
+		clr_all_bits(se);
 		se->seq_exp = 0xff;	// in fact, i dont know
 		se->n_slices = 0;
 		se->msglen = 0;
@@ -365,14 +369,14 @@ static void reset_rse(rse_t *se)
 	}
 }
 
-static rse_t *create_rse(key_t *k)
+static rse_t *create_rse(se_key_t *k)
 {
 	rse_t *se = (rse_t *)xmalloc(sizeof *se);
 	rse_t *oldse;
 	int i;
 
 	_lock_init(&se->lock);
-	reset_rse(se)
+	reset_rse(se);
 
 	_lock(&rse_lock);
 	oldse=rse[k->mac];
@@ -393,12 +397,23 @@ static rse_t *create_rse(key_t *k)
 	return se;
 }
 
-static void put_lower_send_list(u8 buf, int len)
+static void put_upper_recv_list(u8 *buf, int len)
 {
 	data_node_t *s = (data_node_t *)xmalloc(sizeof *s);
 
 	s->len = len <= sizeof s->data ? len:sizeof s->data;
-	memcpy(s->data, buf, s->data);
+	memcpy(s->data, buf, s->len);
+	_lock(&upper_recv_lock);
+	list_push_back(&upper_recv_list, &s->link);
+	_unlock(&upper_recv_lock);
+}
+
+static void put_lower_send_list(u8 *buf, int len)
+{
+	data_node_t *s = (data_node_t *)xmalloc(sizeof *s);
+
+	s->len = len <= sizeof s->data ? len:sizeof s->data;
+	memcpy(s->data, buf, s->len);
 	_lock(&lower_send_lock);
 	list_push_back(&lower_send_list, &s->link);
 	_unlock(&lower_send_lock);
@@ -414,7 +429,7 @@ static void try_lower_send(sse_t *se)
 		ASSIGN_CONTAINER(pkt, node, link);
 		put_lower_send_list(pkt->escaped, pkt->esc_len);
 		// set ack-timer
-		se->ack_timeout = time_msec() + ACK_TIMEOUT;
+		se->ack_timeout = ts_msec() + ACK_TIMEOUT;
 		se->retry = 0;
 		se->is_waiting = true;
 	}
@@ -466,8 +481,8 @@ static void send_ack(u8 dst, u8 src, rse_t *se)
 	u8 *data = mh->data;
 
 	// FIXME: normally, dmac in the first place
-	fh->src = smac;
-	fh->dst = dmac;
+	fh->src = src;
+	fh->dst = dst;
 	if (test_all_bits_set(se->bitmap, se->n_slices))
 		fh->type = FRAME_TYPE_ACKA;
 	else
@@ -493,7 +508,7 @@ static void send_ack(u8 dst, u8 src, rse_t *se)
 	fh->csum = 0;
 	fh->csum = csum8(fh, sizeof *fh);
 
-	esc_len = en_frame(escaped, LINK_MTU, buf, fh->len);
+	esc_len = en_frame(buf, &fh->len, escaped, LINK_MTU);
 	if (esc_len < 0) {
 #if __MILO_INFO_LEVEL__ >= 2
 		printf("(send ack)escaped length exceed MTU\n");
@@ -507,8 +522,8 @@ static void proc_data(void *buf, int len)
 {
 	frm_hdr_t *fh = (frm_hdr_t *)buf;
 	msg_hdr_t *mh = (msg_hdr_t *)fh->data;
-	slice_t *slice = (msg_hdr_t *)mh->data;
-	key_t key;
+	slice_t *slice = (slice_t *)mh->data;
+	se_key_t key;
 	u8 s, t, n_slices;
 	rse_t *se;
 
@@ -542,7 +557,7 @@ static void proc_data(void *buf, int len)
 	}
 	n_slices = t;
 
-	key = {fh->src};
+	key.mac = fh->src;
 	se = get_rse(&key);
 
 	if (se) {
@@ -593,7 +608,7 @@ static void proc_ack_req(void *buf, int len)
 {
 	frm_hdr_t *fh = (frm_hdr_t *)buf;
 	msg_hdr_t *mh = (msg_hdr_t *)fh->data;
-	key_t key;
+	se_key_t key;
 	rse_t *se;
 
 	if (len - sizeof *fh < sizeof *mh) {
@@ -610,7 +625,7 @@ static void proc_ack_req(void *buf, int len)
 		return;
 	}
 
-	key = {fh->src};
+	key.mac = fh->src;
 	se = get_rse(&key);
 
 	if (se) {
@@ -644,8 +659,8 @@ static void proc_patch(void *buf, int len)
 {
 	frm_hdr_t *fh = (frm_hdr_t *)buf;
 	msg_hdr_t *mh = (msg_hdr_t *)fh->data;
-	slice_t *slice = (msg_hdr_t *)mh->data;
-	key_t key;
+	slice_t *slice = (slice_t *)mh->data;
+	se_key_t key;
 	u8 n_slices;
 	rse_t *se;
 
@@ -675,7 +690,7 @@ static void proc_patch(void *buf, int len)
 	}
 	n_slices = mh->len;
 
-	key = {fh->src};
+	key.mac = fh->src;
 	se = get_rse(&key);
 
 	//	cmp	seq
@@ -699,7 +714,7 @@ static void proc_patch(void *buf, int len)
 		}
 		else {
 			if (!se->completed) {
-				patch_rse(se, mh, n_slices);
+				patch_rse(se, slice, n_slices);
 
 				if (test_all_bits_set(se->bitmap,
 							se->n_slices)) {
@@ -731,7 +746,7 @@ static void proc_ack_all(void *buf, int len)
 {
 	frm_hdr_t *fh = (frm_hdr_t *)buf;
 	msg_hdr_t *mh = (msg_hdr_t *)fh->data;
-	key_t key;
+	se_key_t key;
 	sse_t *se;
 
 	if (len - sizeof *fh < sizeof *mh) {
@@ -748,7 +763,7 @@ static void proc_ack_all(void *buf, int len)
 		return;
 	}
 
-	key = {fh->src};
+	key.mac = fh->src;
 	// read only, no lock required
 	se = get_sse(&key);
 
@@ -822,6 +837,8 @@ static void send_patch(send_node_t *pkt, u8 *data, u16 len)
 	frm_hdr_t *tmpfh = (frm_hdr_t *)tmp;
 	msg_hdr_t *tmpmh = (msg_hdr_t *)tmpfh->data;
 	slice_t *tmpslice;
+	bool meet_last;
+	int i;
 
 	frm_hdr_t *fh = (frm_hdr_t *)pkt->frm;
 	msg_hdr_t *mh = (msg_hdr_t *)fh->data;
@@ -840,7 +857,7 @@ static void send_patch(send_node_t *pkt, u8 *data, u16 len)
 	    ) {
 		if (data[i] < pkt->n_slices) {
 			// anyway, copy the whole slice
-			memcpy(tmpslice, slice[data[i]], SLICE_DATA_LEN);
+			memcpy(tmpslice, slice+data[i], SLICE_DATA_LEN);
 			++ tmpmh->len;
 		}
 		else {
@@ -859,7 +876,7 @@ static void send_patch(send_node_t *pkt, u8 *data, u16 len)
 	tmpfh->csum = 0;
 	tmpfh->csum = csum8(tmpfh, sizeof *tmpfh);
 
-	pkt->esc_len = en_frame(pkt->escaped, LINK_MTU, tmp, tmpfh->len);
+	pkt->esc_len = en_frame(tmp, &tmpfh->len, pkt->escaped, LINK_MTU);
 	if (pkt->esc_len < 0) {
 #if __MILO_INFO_LEVEL__ >= 1
 		printf("(send patch)escaped length exceed MTU\n");
@@ -873,7 +890,7 @@ static void proc_ack_part(void *buf, int len)
 {
 	frm_hdr_t *fh = (frm_hdr_t *)buf;
 	msg_hdr_t *mh = (msg_hdr_t *)fh->data;
-	key_t key;
+	se_key_t key;
 	sse_t *se;
 
 	if (len - sizeof *fh < sizeof *mh) {
@@ -898,7 +915,7 @@ static void proc_ack_part(void *buf, int len)
 		return;
 	}
 
-	key = {fh->src};
+	key.mac = fh->src;
 	se = get_sse(&key);
 
 	if (se) {
@@ -937,7 +954,7 @@ static void proc_ack_part(void *buf, int len)
 				return;
 			}
 			// reset ack-timer
-			se->ack_timeout = time_msec() + ACK_TIMEOUT;
+			se->ack_timeout = ts_msec() + ACK_TIMEOUT;
 			send_patch(pkt, mh->data, mh->len);
 			// FIXME: should i make the lock smaller by clone 'pkt'?
 			_unlock(&se->lock);
@@ -958,9 +975,9 @@ static void proc_ack_part(void *buf, int len)
 	}
 }
 
-static void proc_timer(void)
+void proc_timer(void)
 {
-	long long int now = time_msec();
+	long long int now = ts_msec();
 	int i;
 
 	_lock(&sse_lock);
@@ -972,7 +989,7 @@ static void proc_timer(void)
 
 		_lock(&se->lock);
 		if (se->ack_timeout && now > se->ack_timeout) {
-			se->idle_timeout = time_msec() + IDLE_TIMEOUT;
+			se->idle_timeout = ts_msec() + IDLE_TIMEOUT;
 
 			if (++se->retry > MAX_RETRY_TIMES) {
 				struct list *list_node;
@@ -1044,7 +1061,7 @@ int upper_send(u8 dmac, u8 smac, void *msg, int msglen)
 	msg_hdr_t *mh = (msg_hdr_t *)fh->data;
 
 	sse_t *se;
-	key_t key;
+	se_key_t key;
 	int n_slices;
 
 	// just a coarse check
@@ -1055,13 +1072,14 @@ int upper_send(u8 dmac, u8 smac, void *msg, int msglen)
 		goto err_out;
 	}
 
-	key = {dmac};
+	key.mac = dmac;
 	_lock(&sse_lock);
 	se = get_sse(&key);
 	if (!se)
 		se = create_sse(&key);
 	_unlock(&sse_lock);
 
+	printf("1\n");
 	// FIXME: normally, dmac in the first place
 	fh->src = smac;
 	fh->dst = dmac;
@@ -1102,7 +1120,7 @@ int upper_send(u8 dmac, u8 smac, void *msg, int msglen)
 #endif
 				goto err_out;
 			}
-			msglen = SLICE_DATA_LEN * n_slice;
+			msglen = SLICE_DATA_LEN * n_slices;
 		}
 	} while(snode->esc_len > 0);
 
@@ -1162,7 +1180,7 @@ int lower_fetch(u8 *buf, int *len)
 	_lock(&lower_send_lock);
 	if (!list_is_empty(&lower_send_list)) {
 		node = list_pop_front(&lower_send_list);
-		unlock(&lower_send_lock);
+		_unlock(&lower_send_lock);
 		ASSIGN_CONTAINER(s, node, link);
 		if (s->len <= *len) {
 			*len = s->len;
@@ -1185,10 +1203,10 @@ int lower_fetch(u8 *buf, int *len)
  */
 int lower_put(void *raw_frm, int rawlen)
 {
-	buf[LINK_MTU];
+	u8 buf[LINK_MTU];
 	frm_hdr_t *fh = (frm_hdr_t *)buf;
 	msg_hdr_t *mh = (msg_hdr_t *)fh->data;
-	key_t key;
+	se_key_t key;
 	int len;
 
 	len = de_frame(raw_frm, rawlen, buf, sizeof buf);
