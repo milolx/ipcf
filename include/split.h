@@ -33,23 +33,26 @@ typedef uint32_t	u32;
 typedef struct {
 	u8 src;
 	u8 dst;
+	u8 type;
+	u8 reserved;
 	u16 len;
 #define FRAME_TYPE_DATA		1
 #define FRAME_TYPE_ACKA		2
 #define FRAME_TYPE_ACKR		3
 #define FRAME_TYPE_ACKP		4
 #define FRAME_TYPE_PATCH	5
-	u8 type;
 	u16 csum;
 	u8 data[0];
-}__attribute__((packed))frm_hdr_t;
+}frm_hdr_t;
+//}__attribute__((packed))frm_hdr_t;
 
 typedef struct {
-	u8 seq;
 	u16 len;
+	u8 seq;
 	u8 csum;
 	u8 data[0];
 }msg_hdr_t;
+//}__attribute__((packed))msg_hdr_t;
 
 typedef struct {
 #define SLICE_SEPERATOR	0x7e
@@ -57,7 +60,8 @@ typedef struct {
 	u8 seq;
 	u8 data[SLICE_DATA_LEN];
 	u16 csum;
-}__attribute__((packed))slice_t;
+}slice_t;
+//}__attribute__((packed))slice_t;
 
 typedef struct {
 	u8 mac;		// remote mac

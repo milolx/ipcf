@@ -24,14 +24,14 @@ static int en_frame(u8 *data, u16 *data_len, u8 *frm, u16 size)
 {
 	int len = -1;
 	u8 *ch;
-	u8 *p;
+	u8 *p=frm;
+
+	p = frm;
+	ch = (u8 *)data;
 
 	if (size < 1)
 		goto err_out;
 	*(p++) = BREAK_CHAR;
-
-	p = frm;
-	ch = (u8 *)data;
 
 	for (ch = (u8 *)data; ch - data < *data_len; ++ch) {
 		switch (*ch) {
@@ -154,6 +154,7 @@ static void fill_slice_k(u8 k, void *from, u8 len, void *dest)
 {
 	slice_t *slice = (slice_t *)dest;
 
+	// FIXME: what is this used for?
 	slice->sep = SLICE_SEPERATOR;
 	slice->seq = k;
 	memcpy(slice->data, from, len);
@@ -263,7 +264,8 @@ static sse_t *get_sse(se_key_t *k)
 	se = sse[k->mac];
 	_unlock(&sse_lock);
 
-	se->idle_timeout = ts_msec() + IDLE_TIMEOUT;
+	if (se)
+		se->idle_timeout = ts_msec() + IDLE_TIMEOUT;
 
 	return se;
 }
@@ -336,7 +338,8 @@ static rse_t *get_rse(se_key_t *k)
 	se = rse[k->mac];
 	_unlock(&rse_lock);
 
-	se->idle_timeout = ts_msec() + IDLE_TIMEOUT;
+	if (se)
+		se->idle_timeout = ts_msec() + IDLE_TIMEOUT;
 
 	return se;
 }
@@ -1073,17 +1076,15 @@ int upper_send(u8 dmac, u8 smac, void *msg, int msglen)
 	}
 
 	key.mac = dmac;
-	_lock(&sse_lock);
 	se = get_sse(&key);
 	if (!se)
 		se = create_sse(&key);
-	_unlock(&sse_lock);
 
-	printf("1\n");
 	// FIXME: normally, dmac in the first place
 	fh->src = smac;
 	fh->dst = dmac;
 	fh->type = FRAME_TYPE_DATA;
+	fh->reserved = 0;
 
 	mh->seq = se->seq++; se->seq &= 0x01;
 	n_slices = fill_slices(
@@ -1122,7 +1123,7 @@ int upper_send(u8 dmac, u8 smac, void *msg, int msglen)
 			}
 			msglen = SLICE_DATA_LEN * n_slices;
 		}
-	} while(snode->esc_len > 0);
+	} while(snode->esc_len < 0);
 
 	_lock(&se->lock);
 	list_push_back(&se->pkt_list, &snode->link);
@@ -1168,7 +1169,9 @@ int upper_recv(u8 *buf, int *len)
 
 /*
  * 'buf' has 'len' bytes of space
- * return 0 on normal, negative on error(data node always moved away from list)
+ * return 0 on normal(queue is empty or data fetched)
+ * return negative on error(data node always moved away from list)
+ *        -1 *len is too small to hold a intact frame
  * save to len the actual data length copied to buf
  */
 int lower_fetch(u8 *buf, int *len)
@@ -1184,7 +1187,7 @@ int lower_fetch(u8 *buf, int *len)
 		ASSIGN_CONTAINER(s, node, link);
 		if (s->len <= *len) {
 			*len = s->len;
-			memcpy(buf, s->data, ret);
+			memcpy(buf, s->data, *len);
 		}
 		else {
 			*len = 0;
@@ -1192,8 +1195,10 @@ int lower_fetch(u8 *buf, int *len)
 		}
 		free(node);
 	}
-	else
+	else {
 		_unlock(&lower_send_lock);
+		*len = 0;
+	}
 
 	return ret;
 }
@@ -1265,11 +1270,18 @@ err_out:
 
 void split_init()
 {
+	int i;
+
 	_lock_init(&upper_recv_lock);
 	list_init(&upper_recv_list);
 
 	_lock_init(&lower_send_lock);
 	list_init(&lower_send_list);
+
+	for (i=0; i<NUM_OF_SE; ++i) {
+		sse[i] = NULL;
+		rse[i] = NULL;
+	}
 }
 
 void split_cleanup()

@@ -59,4 +59,57 @@ xrealloc(void *p, size_t size)
 	return p;
 }
 
+/* Writes the 'size' bytes in 'buf' to 'stream' as hex bytes arranged 16 per
+ * line.  Numeric offsets are also included, starting at 'ofs' for the first
+ * byte in 'buf'.  If 'ascii' is true then the corresponding ASCII characters
+ * are also rendered alongside. */
+static inline void
+hex_dump(FILE *stream, const void *buf_, size_t size, uintptr_t ofs, bool ascii)
+{
+	const uint8_t *buf = buf_;
+	const size_t per_line = 16; /* Maximum bytes per line. */
+
+	while (size > 0)
+	{
+		size_t start, end, n;
+		size_t i;
+
+		/* Number of bytes on this line. */
+		start = ofs % per_line;
+		end = per_line;
+		if (end - start > size)
+			end = start + size;
+		n = end - start;
+
+		/* Print line. */
+
+		fprintf(stream, "%04x  ", (uintmax_t) ((int)(ofs/per_line)*per_line));
+		for (i = 0; i < start; i++)
+			fprintf(stream, "   ");
+		for (; i < end; i++)
+			fprintf(stream, "%02x%c",
+					buf[i - start], i == per_line / 2 - 1? '-' : ' ');
+		if (ascii)
+		{
+			for (; i < per_line; i++)
+				fprintf(stream, "   ");
+			fprintf(stream, "|");
+			for (i = 0; i < start; i++)
+				fprintf(stream, " ");
+			for (; i < end; i++) {
+				int c = buf[i - start];
+				putc(c >= 32 && c < 127 ? c : '.', stream);
+			}
+			for (; i < per_line; i++)
+				fprintf(stream, " ");
+			fprintf(stream, "|");
+		}
+		fprintf(stream, "\n");
+
+		ofs += n;
+		buf += n;
+		size -= n;
+	}
+}
+
 #endif /* __UTIL_H__ */
