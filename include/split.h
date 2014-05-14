@@ -1,6 +1,8 @@
 #ifndef __SPLIT_H__
 #define __SPLIT_H__
 
+#include "types.h"
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
@@ -8,16 +10,13 @@
 #include "list.h"
 #include "atomic.h"
 
-typedef uint8_t		u8;
-typedef uint16_t	u16;
-typedef uint32_t	u32;
-
 #define NUM_OF_SE	256	// max num of r/s sessions, 8-bit mac as key
 #define LINK_MTU	1000
 #define SLICE_DATA_LEN	32
 #define IDLE_TIMEOUT	(10 * 1000)	// in ms
-#define ACK_TIMEOUT	(3 * 1000)	// in ms
-#define MAX_RETRY_TIMES	3
+//#define ACK_TIMEOUT	(3 * 1000)	// in ms
+#define ACK_TIMEOUT	(0)		// 0 for debug
+#define MAX_RETRY_TIMES	10
 
 #define FRM_MSG_HDR_LEN	(sizeof(frm_hdr_t) + sizeof(msg_hdr_t))
 #define LINK_DATA_MAX	(LINK_MTU - FRM_MSG_HDR_LEN)

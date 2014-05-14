@@ -1,6 +1,12 @@
 #include "atomic.h"
 #include "split.h"
 #include "ts.h"
+#include "crc.h"
+#include "dbg.h"
+
+#ifdef __DEBUG__
+#define __MILO_INFO_LEVEL__ 3
+#endif
 
 sse_t *sse[NUM_OF_SE];	// send sessions, 8-bit key
 light_lock_t sse_lock;
@@ -123,6 +129,7 @@ static int de_frame(u8 *frm, u16 frm_len, u8 *buf, u16 size)
 						len = -3;
 						goto out;
 				}
+				break;
 			default:
 				if (p-buf + 1 > size)
 					// err: no more root
@@ -140,14 +147,14 @@ out:
 	return len;
 }
 
-static u8 csum8(void *d, int len)
+static u8 csum8(u8 old, void *d, int len)
 {
-	return 0;
+	return crc8(old, d, len);
 }
 
-static u16 csum16(void *d, int len)
+static u16 csum16(u16 old, void *d, int len)
 {
-	return 0;
+	return crc16(old, d, len);
 }
 
 static void fill_slice_k(u8 k, void *from, u8 len, void *dest)
@@ -161,7 +168,7 @@ static void fill_slice_k(u8 k, void *from, u8 len, void *dest)
 	if (len < SLICE_DATA_LEN)
 		bzero(slice->data + len, SLICE_DATA_LEN - len);
 	slice->csum = 0;
-	slice->csum = csum16(slice, sizeof *slice);
+	slice->csum = csum16(0, slice, sizeof *slice);
 }
 
 /*
@@ -213,19 +220,17 @@ static int find_first_zero(u32 *map, u8 k, u8 max)
 {
 	u8 start = k>>5;
 	u8 end = max>>5;
-	u8 bit = k & 0x1f;
 	u8 x, cnt;
+
 	cnt = 0;
 	x=start;
-	while (x <= end) {
-		if (!(map[x] & (1L<<bit)))
-			return k + cnt;
+	while (x <= end && k < max) {
+		if (!(map[x] & (1L<<(k & 0x1f))))
+			return k;
 		else {
 			++cnt;
-			if (++bit == 32) {
-				bit = 0;
+			if (++k & 0x1f  == 0)
 				++x;
-			}
 		}
 	}
 	return -1;
@@ -313,7 +318,7 @@ static sse_t *create_sse(se_key_t *k)
 		send_node_t *pkt,*next;
 
 #if __MILO_INFO_LEVEL__ >= 1
-		printf("(create sse)sse[key]'s not empry\n");
+		DBG("(create sse)sse[key]'s not empry\n");
 #endif
 		_lock(&sse_lock);
 
@@ -364,11 +369,13 @@ static void reset_rse(rse_t *se)
 	int i;
 
 	if (se) {
+		se->idle_timeout = ts_msec() + IDLE_TIMEOUT;
 		clr_all_bits(se);
 		se->seq_exp = 0xff;	// in fact, i dont know
 		se->n_slices = 0;
 		se->msglen = 0;
 		bzero(se->data, sizeof se->data);
+		se->completed = false;
 	}
 }
 
@@ -387,7 +394,7 @@ static rse_t *create_rse(se_key_t *k)
 	_unlock(&rse_lock);
 	if (oldse) {
 #if __MILO_INFO_LEVEL__ >= 1
-		printf("(create rse)rse[key]'s not empry\n");
+		DBG("(create rse)rse[key]'s not empry\n");
 #endif
 		_lock(&rse_lock);
 
@@ -433,7 +440,7 @@ static void try_lower_send(sse_t *se)
 		put_lower_send_list(pkt->escaped, pkt->esc_len);
 		// set ack-timer
 		se->ack_timeout = ts_msec() + ACK_TIMEOUT;
-		se->retry = 0;
+		se->retry ++;
 		se->is_waiting = true;
 	}
 }
@@ -441,17 +448,20 @@ static void try_lower_send(sse_t *se)
 static void cp_slice_to_rse(rse_t *se, slice_t *s)
 {
 	u8 len;
+	u16 csum_save;
 
-	if (csum16(s, sizeof *s)) {
+	csum_save = s->csum;
+	s->csum = 0;
+	if (csum_save != csum16(s->csum, s, sizeof *s)) {
 #if __MILO_INFO_LEVEL__ >= 3
-		printf("(cp slice to rse)msg csum err\n");
+		DBG("(cp slice to rse)slice csum err\n");
 #endif
 		return;
 	}
 
 	if (s->seq > se->n_slices) {
 #if __MILO_INFO_LEVEL__ >= 1
-		printf("(cp slice to rse)invalid seq(%d, max=%d)\n",
+		DBG("(cp slice to rse)invalid seq(%d, max=%d)\n",
 				s->seq, se->n_slices);
 #endif
 		return;
@@ -494,27 +504,32 @@ static void send_ack(u8 dst, u8 src, rse_t *se)
 	mh->seq = se->seq_exp;
 	mh->len = 0;
 	if (fh->type == FRAME_TYPE_ACKP) {
-		u8 k = 0;
+		int result;
+		u8 k;
 
-		do {
-			k = find_first_zero(se->bitmap, k, se->n_slices);
-			*(data++) = k;
+		k = 0;
+		while (1) {
+			result = find_first_zero(se->bitmap, k, se->n_slices);
+			if (result < 0)
+				break;
+			k = result;
+			*(data++) = k++;
 			++ mh->len;
-		} while (k >= 0);
+		}
 	}
 	mh->csum = 0;
 	// FIXME: this is urgly...
 	//        violate priciple of protocol layering
-	mh->csum = csum8(mh, sizeof *mh + mh->len);
+	mh->csum = csum8(0, mh, sizeof *mh + mh->len);
 
 	fh->len = FRM_MSG_HDR_LEN + mh->len;
 	fh->csum = 0;
-	fh->csum = csum8(fh, sizeof *fh);
+	fh->csum = csum8(0, fh, sizeof *fh);
 
 	esc_len = en_frame(buf, &fh->len, escaped, LINK_MTU);
 	if (esc_len < 0) {
 #if __MILO_INFO_LEVEL__ >= 2
-		printf("(send ack)escaped length exceed MTU\n");
+		DBG("(send ack)escaped length exceed MTU\n");
 #endif
 	}
 	else
@@ -529,16 +544,19 @@ static void proc_data(void *buf, int len)
 	se_key_t key;
 	u8 s, t, n_slices;
 	rse_t *se;
+	u8 csum_save;
 
 	if (len - sizeof *fh < sizeof *mh) {
 #if __MILO_INFO_LEVEL__ >= 2
-		printf("(proc data)frm data's too short(%d)\n", len-sizeof *fh);
+		DBG("(proc data)frm data's too short(%d)\n", len-sizeof *fh);
 #endif
 		return;
 	}
-	if (csum8(mh, sizeof *mh)) {
+	csum_save = mh->csum;
+	mh->csum = 0;
+	if (csum_save != csum8(mh->csum, mh, sizeof *mh)) {
 #if __MILO_INFO_LEVEL__ >= 3
-		printf("(proc data)msg csum err\n");
+		DBG("(proc data)msg csum err\n");
 #endif
 		return;
 	}
@@ -553,7 +571,7 @@ static void proc_data(void *buf, int len)
 	t = (mh->len + SLICE_DATA_LEN - 1)/SLICE_DATA_LEN;
 	if (s < t) {
 #if __MILO_INFO_LEVEL__ >= 1
-		printf("(proc data)msg length invalid(%d, frm len=%d)\n",
+		DBG("(proc data)msg length invalid(%d, frm len=%d)\n",
 				mh->len, fh->len);
 #endif
 		return;
@@ -580,9 +598,14 @@ static void proc_data(void *buf, int len)
 		}
 		else {
 #if __MILO_INFO_LEVEL__ >= 1
-			printf("(proc data)need patch, data received...reset\n");
+			DBG("(proc data)need patch, data received..."	\
+					"ack may lost! reset\n");
 #endif
 			reset_rse(se);
+
+			se->seq_exp = mh->seq;
+			se->msglen = mh->len;
+			se->n_slices = n_slices;
 		}
 	}
 	if (!se) {
@@ -613,17 +636,20 @@ static void proc_ack_req(void *buf, int len)
 	msg_hdr_t *mh = (msg_hdr_t *)fh->data;
 	se_key_t key;
 	rse_t *se;
+	u8 csum_save;
 
 	if (len - sizeof *fh < sizeof *mh) {
 #if __MILO_INFO_LEVEL__ >= 2
-		printf("(proc ack req)frm data's too short(%d)\n",
+		DBG("(proc ack req)frm data's too short(%d)\n",
 				len - sizeof *fh);
 #endif
 		return;
 	}
-	if (csum8(mh, sizeof *mh)) {
+	csum_save = mh->csum;
+	mh->csum = 0;
+	if (csum_save != csum8(mh->csum, mh, sizeof *mh)) {
 #if __MILO_INFO_LEVEL__ >= 3
-		printf("(proc ack req)msg csum err\n");
+		DBG("(proc ack req)msg csum err\n");
 #endif
 		return;
 	}
@@ -642,7 +668,7 @@ static void proc_ack_req(void *buf, int len)
 #endif
 			_unlock(&se->lock);
 #if __MILO_INFO_LEVEL__ >= 2
-			printf("req ack seq is not expected"		\
+			DBG("req ack seq is not expected"		\
 					"(exp:%d, get:%d), ignore\n",
 					exp, mh->seq);
 #endif
@@ -652,7 +678,7 @@ static void proc_ack_req(void *buf, int len)
 	}
 	else {
 #if __MILO_INFO_LEVEL__ >= 2
-		printf("rse's not found(smac:0x%02x)\n", fh->src);
+		DBG("rse's not found(smac:0x%02x)\n", fh->src);
 #endif
 		return;
 	}
@@ -666,17 +692,20 @@ static void proc_patch(void *buf, int len)
 	se_key_t key;
 	u8 n_slices;
 	rse_t *se;
+	u8 csum_save;
 
 	if (len - sizeof *fh < sizeof *mh) {
 #if __MILO_INFO_LEVEL__ >= 2
-		printf("(proc patch)frm data's too short(%d)\n",
+		DBG("(proc patch)frm data's too short(%d)\n",
 				len - sizeof *fh);
 #endif
 		return;
 	}
-	if (csum8(mh, sizeof *mh)) {
+	csum_save = mh->csum;
+	mh->csum = 0;
+	if (csum_save != csum8(mh->csum, mh, sizeof *mh)) {
 #if __MILO_INFO_LEVEL__ >= 3
-		printf("(proc patch)msg csum err\n");
+		DBG("(proc patch)msg csum err\n");
 #endif
 		return;
 	}
@@ -686,7 +715,7 @@ static void proc_patch(void *buf, int len)
 	n_slices = (len - FRM_MSG_HDR_LEN) / sizeof *slice;
 	if (n_slices < mh->len) {
 #if __MILO_INFO_LEVEL__ >= 2
-		printf("(proc patch)msg length invalid(%d, frm len=%d)\n",
+		DBG("(proc patch)msg length invalid(%d, frm len=%d)\n",
 				mh->len, len);
 #endif
 		return;
@@ -709,7 +738,7 @@ static void proc_patch(void *buf, int len)
 #endif
 			_unlock(&se->lock);
 #if __MILO_INFO_LEVEL__ >= 2
-			printf("(proc patch)recv seq is not expected"	\
+			DBG("(proc patch)recv seq is not expected"	\
 					"(exp:%d, get:%d), ignore\n",	\
 					exp, mh->seq);
 #endif
@@ -718,6 +747,7 @@ static void proc_patch(void *buf, int len)
 		else {
 			if (!se->completed) {
 				patch_rse(se, slice, n_slices);
+				send_ack(fh->src, fh->dst, se);
 
 				if (test_all_bits_set(se->bitmap,
 							se->n_slices)) {
@@ -730,7 +760,7 @@ static void proc_patch(void *buf, int len)
 				// duplitcated data
 				_unlock(&se->lock);
 #if __MILO_INFO_LEVEL__ >= 2
-				printf("(proc patch)duplicated pkt");
+				DBG("(proc patch)duplicated pkt");
 #endif
 				return;
 			}
@@ -739,7 +769,7 @@ static void proc_patch(void *buf, int len)
 	}
 	else {
 #if __MILO_INFO_LEVEL__ >= 2
-		printf("(proc patch)ack sse doesn't exist\n");
+		DBG("(proc patch)patch sse doesn't exist\n");
 #endif
 		return;
 	}
@@ -751,17 +781,20 @@ static void proc_ack_all(void *buf, int len)
 	msg_hdr_t *mh = (msg_hdr_t *)fh->data;
 	se_key_t key;
 	sse_t *se;
+	u8 csum_save;
 
 	if (len - sizeof *fh < sizeof *mh) {
 #if __MILO_INFO_LEVEL__ >= 2
-		printf("(proc ack all)frm data's too short(%d)\n",
+		DBG("(proc ack all)frm data's too short(%d)\n",
 				len - sizeof *fh);
 #endif
 		return;
 	}
-	if (csum8(mh, sizeof *mh)) {
+	csum_save = mh->csum;
+	mh->csum = 0;
+	if (csum_save != csum8(mh->csum, mh, sizeof *mh)) {
 #if __MILO_INFO_LEVEL__ >= 3
-		printf("(proc ack all)msg csum err\n");
+		DBG("(proc ack all)msg csum err\n");
 #endif
 		return;
 	}
@@ -787,7 +820,7 @@ static void proc_ack_all(void *buf, int len)
 			if (fh_->src != fh->dst || fh_->dst != fh->src) {
 				_unlock(&se->lock);
 #if __MILO_INFO_LEVEL__ >= 2
-				printf("(proc ack all)mac addr"		\
+				DBG("(proc ack all)mac addr"		\
 						" mismatch, ignore\n");
 #endif
 				return;
@@ -798,6 +831,7 @@ static void proc_ack_all(void *buf, int len)
 
 				se->is_waiting = false;
 				se->ack_timeout = -1;	// remove ack-timer
+				se->retry = 0;
 				try_lower_send(se);
 
 				_unlock(&se->lock);
@@ -810,7 +844,7 @@ static void proc_ack_all(void *buf, int len)
 #endif
 				_unlock(&se->lock);
 #if __MILO_INFO_LEVEL__ >= 2
-				printf("(proc ack all)ack seq is not"	\
+				DBG("(proc ack all)ack seq is not"	\
 						" expected(exp:%d,"	\
 						" get:%d), ignore\n",
 						exp, mh->seq);
@@ -821,14 +855,14 @@ static void proc_ack_all(void *buf, int len)
 		else {
 			_unlock(&se->lock);
 #if __MILO_INFO_LEVEL__ >= 2
-			printf("(proc ack all)send q's empty\n");
+			DBG("(proc ack all)send q's empty\n");
 #endif
 			return;
 		}
 	}
 	else {
 #if __MILO_INFO_LEVEL__ >= 2
-		printf("(proc ack all)sse's not found\n");
+		DBG("(proc ack all)sse's not found\n");
 #endif
 		return;
 	}
@@ -840,7 +874,6 @@ static void send_patch(send_node_t *pkt, u8 *data, u16 len)
 	frm_hdr_t *tmpfh = (frm_hdr_t *)tmp;
 	msg_hdr_t *tmpmh = (msg_hdr_t *)tmpfh->data;
 	slice_t *tmpslice;
-	bool meet_last;
 	int i;
 
 	frm_hdr_t *fh = (frm_hdr_t *)pkt->frm;
@@ -852,20 +885,19 @@ static void send_patch(send_node_t *pkt, u8 *data, u16 len)
 	tmpfh->type = FRAME_TYPE_PATCH;
 	tmpmh->seq = mh->seq;
 	tmpmh->len = 0;
-	meet_last = false;
 	for (
 		i=0, tmpslice = (slice_t *)tmpmh->data;
-		i<len, (((u8 *)tmpslice) < tmp + LINK_MTU - SLICE_DATA_LEN);
+		i<len && (((u8 *)tmpslice) < tmp + LINK_MTU - sizeof *slice);
 		++i, ++tmpslice
 	    ) {
 		if (data[i] < pkt->n_slices) {
 			// anyway, copy the whole slice
-			memcpy(tmpslice, slice+data[i], SLICE_DATA_LEN);
+			memcpy(tmpslice, slice+data[i], sizeof *slice);
 			++ tmpmh->len;
 		}
 		else {
 #if __MILO_INFO_LEVEL__ >= 2
-			printf("(send patch)need seq(%d) out of"	\
+			DBG("(send patch)need seq(%d) out of"	\
 					" range(<%d), skip\n",
 					data[i], pkt->n_slices);
 #endif
@@ -873,16 +905,16 @@ static void send_patch(send_node_t *pkt, u8 *data, u16 len)
 		}
 	}
 	tmpmh->csum = 0;
-	tmpmh->csum = csum8(tmpmh, sizeof *tmpmh);
+	tmpmh->csum = csum8(0, tmpmh, sizeof *tmpmh);
 
 	tmpfh->len = FRM_MSG_HDR_LEN + sizeof(slice_t)*tmpmh->len;
 	tmpfh->csum = 0;
-	tmpfh->csum = csum8(tmpfh, sizeof *tmpfh);
+	tmpfh->csum = csum8(0, tmpfh, sizeof *tmpfh);
 
 	pkt->esc_len = en_frame(tmp, &tmpfh->len, pkt->escaped, LINK_MTU);
 	if (pkt->esc_len < 0) {
 #if __MILO_INFO_LEVEL__ >= 1
-		printf("(send patch)escaped length exceed MTU\n");
+		DBG("(send patch)escaped length exceed MTU\n");
 #endif
 	}
 	else
@@ -895,24 +927,27 @@ static void proc_ack_part(void *buf, int len)
 	msg_hdr_t *mh = (msg_hdr_t *)fh->data;
 	se_key_t key;
 	sse_t *se;
+	u8 csum_save;
 
 	if (len - sizeof *fh < sizeof *mh) {
 #if __MILO_INFO_LEVEL__ >= 2
-		printf("(proc ack part)frm data's too short(%d)\n",
+		DBG("(proc ack part)frm data's too short(%d)\n",
 				len - sizeof *fh);
 #endif
 		return;
 	}
-	if (csum8(mh, sizeof *mh)) {
+	csum_save = mh->csum;
+	mh->csum = 0;
+	if (csum_save != csum8(mh->csum, mh, sizeof *mh + mh->len)) {
 #if __MILO_INFO_LEVEL__ >= 3
-		printf("(proc ack part)msg csum err\n");
+		DBG("(proc ack part)msg csum err\n");
 #endif
 		return;
 	}
 
 	if (mh->len > len - FRM_MSG_HDR_LEN) {
 #if __MILO_INFO_LEVEL__ >= 2
-		printf("(proc ack part)msg len invaid"		\
+		DBG("(proc ack part)msg len invaid"		\
 				"(%d, frm len=%d)\n", mh->len, len);
 #endif
 		return;
@@ -937,7 +972,7 @@ static void proc_ack_part(void *buf, int len)
 			if (fh_->src != fh->dst || fh_->dst != fh->src) {
 				_unlock(&se->lock);
 #if __MILO_INFO_LEVEL__ >= 2
-				printf("(proc ack part)mac addr"	\
+				DBG("(proc ack part)mac addr"	\
 						" mismatch, ignore\n");
 #endif
 				return;
@@ -949,7 +984,7 @@ static void proc_ack_part(void *buf, int len)
 #endif
 				_unlock(&se->lock);
 #if __MILO_INFO_LEVEL__ >= 2
-				printf("(proc ack part)ack seq is not"	\
+				DBG("(proc ack part)ack seq is not"	\
 						" expected(exp:%d,"	\
 						" get:%d), ignore\n",
 						exp, mh->seq);
@@ -958,6 +993,7 @@ static void proc_ack_part(void *buf, int len)
 			}
 			// reset ack-timer
 			se->ack_timeout = ts_msec() + ACK_TIMEOUT;
+			se->retry = 0;
 			send_patch(pkt, mh->data, mh->len);
 			// FIXME: should i make the lock smaller by clone 'pkt'?
 			_unlock(&se->lock);
@@ -965,18 +1001,38 @@ static void proc_ack_part(void *buf, int len)
 		else {
 			_unlock(&se->lock);
 #if __MILO_INFO_LEVEL__ >= 2
-			printf("(proc ack part)send q's empty\n");
+			DBG("(proc ack part)send q's empty\n");
 #endif
 			return;
 		}
 	}
 	else {
 #if __MILO_INFO_LEVEL__ >= 2
-		printf("(proc ack part)sse's not found\n");
+		DBG("(proc ack part)sse's not found\n");
 #endif
 		return;
 	}
 }
+
+#ifdef __DEBUG__
+int get_urq_num()
+{
+	int n;
+	_lock(&upper_recv_lock);
+	n = list_size(&upper_recv_list);
+	_unlock(&upper_recv_lock);
+	return n;
+}
+
+int get_lsq_num()
+{
+	int n;
+	_lock(&lower_send_lock);
+	n = list_size(&lower_send_list);
+	_unlock(&lower_send_lock);
+	return n;
+}
+#endif
 
 void proc_timer(void)
 {
@@ -991,20 +1047,22 @@ void proc_timer(void)
 			continue;
 
 		_lock(&se->lock);
-		if (se->ack_timeout && now > se->ack_timeout) {
+		if (se->ack_timeout > 0 && now >= se->ack_timeout) {
 			se->idle_timeout = ts_msec() + IDLE_TIMEOUT;
 
-			if (++se->retry > MAX_RETRY_TIMES) {
+			if (se->retry > MAX_RETRY_TIMES) {
 				struct list *list_node;
 				send_node_t *pkt;
 
 				list_node = list_pop_front(&se->pkt_list);
 				se->is_waiting = false;
+				se->ack_timeout = -1;	// remove ack-timer
+				se->retry = 0;
 				try_lower_send(se);
 				_unlock(&se->lock);
 #if __MILO_INFO_LEVEL__ >= 1
-				printf("(proc timer)exceed max retry"	\
-						"timers(%d), drop\n",
+				DBG("(proc timer)exceed max retry"	\
+						"-time(%d), drop\n",
 						MAX_RETRY_TIMES);
 #endif
 				ASSIGN_CONTAINER(pkt, list_node, link);
@@ -1020,7 +1078,7 @@ void proc_timer(void)
 		}
 		_unlock(&se->lock);
 
-		if (now > se->idle_timeout) {
+		if (now >= se->idle_timeout) {
 			send_node_t *pkt,*next;
 
 			sse[i] = NULL;
@@ -1040,8 +1098,6 @@ void proc_timer(void)
 		rse_t *se = rse[i];
 
 		if (se && now > se->idle_timeout) {
-			send_node_t *pkt,*next;
-
 			rse[i] = NULL;
 
 			_lock_destroy(&se->lock);
@@ -1070,7 +1126,7 @@ int upper_send(u8 dmac, u8 smac, void *msg, int msglen)
 	// just a coarse check
 	if (msglen <= 0) {
 #if __MILO_INFO_LEVEL__ >= 1
-		printf("(upper send)msglen out of range(%d)\n", msglen);
+		DBG("(upper send)msglen out of range(%d)\n", msglen);
 #endif
 		goto err_out;
 	}
@@ -1100,10 +1156,12 @@ int upper_send(u8 dmac, u8 smac, void *msg, int msglen)
 
 		mh->len = msglen;	// pure data length, not including slice hdrs
 		mh->csum = 0;
-		mh->csum = csum8(mh, sizeof *mh);
+		mh->csum = csum8(0, mh, sizeof *mh);
 		fh->len = sizeof(slice_t)*n_slices + FRM_MSG_HDR_LEN;
 		fh->csum = 0;
-		fh->csum = csum8(fh, sizeof *fh);
+		fh->csum = csum8(0, fh, sizeof *fh);
+
+		snode->n_slices = n_slices;
 
 		len = fh->len;
 		result = en_frame(snode->frm, &len, snode->escaped, LINK_MTU);
@@ -1117,13 +1175,13 @@ int upper_send(u8 dmac, u8 smac, void *msg, int msglen)
 			n_slices -= cut_slice;
 			if (n_slices <= 0) {
 #if __MILO_INFO_LEVEL__ >= 1
-				printf("(upper send)can not fill any slice\n");
+				DBG("(upper send)can not fill any slice\n");
 #endif
 				goto err_out;
 			}
 			msglen = SLICE_DATA_LEN * n_slices;
 		}
-	} while(snode->esc_len < 0);
+	} while(snode->esc_len <= 0);
 
 	_lock(&se->lock);
 	list_push_back(&se->pkt_list, &snode->link);
@@ -1212,30 +1270,33 @@ int lower_put(void *raw_frm, int rawlen)
 	frm_hdr_t *fh = (frm_hdr_t *)buf;
 	msg_hdr_t *mh = (msg_hdr_t *)fh->data;
 	se_key_t key;
+	u8 csum_save;
 	int len;
 
 	len = de_frame(raw_frm, rawlen, buf, sizeof buf);
 	if (len < 0) {
 #if __MILO_INFO_LEVEL__ >= 3
-		printf("(lower put)de-frame err(%d)\n", len);
+		DBG("(lower put)de-frame err(%d)\n", len);
 #endif
 		goto err_out;
 	}
 	if (len < sizeof *fh) {
 #if __MILO_INFO_LEVEL__ >= 3
-		printf("(lower put)frame's too short(%d)\n", len);
+		DBG("(lower put)frame's too short(%d)\n", len);
 #endif
 		goto err_out;
 	}
-	if (csum8(fh, sizeof *fh)) {
+	csum_save = fh->csum;
+	fh->csum = 0;
+	if (csum_save != csum8(0, fh, sizeof *fh)) {
 #if __MILO_INFO_LEVEL__ >= 3
-		printf("(lower put)frame csum err\n");
+		DBG("(lower put)frame csum err\n");
 #endif
 		goto err_out;
 	}
 	if (fh->len != len) {
 #if __MILO_INFO_LEVEL__ >= 1
-		printf("(lower put)frame length mismatch"	\
+		DBG("(lower put)frame length mismatch"	\
 				"(fh->len=%d, len=%d)\n", fh->len, len);
 #endif
 		goto err_out;
@@ -1253,12 +1314,13 @@ int lower_put(void *raw_frm, int rawlen)
 			break;
 		case FRAME_TYPE_ACKA:
 			proc_ack_all(buf, len);
+			break;
 		case FRAME_TYPE_ACKP:
 			proc_ack_part(buf, len);
 			break;
 		default:
 #if __MILO_INFO_LEVEL__ >= 1
-			printf("(lower put)unknown type->%d\n", fh->type);
+			DBG("(lower put)unknown type->%d\n", fh->type);
 #endif
 			goto err_out;
 	}
