@@ -5,7 +5,7 @@
 #include "dbg.h"
 
 #ifdef __DEBUG__
-#define __MILO_INFO_LEVEL__ 3
+#define __MILO_INFO_LEVEL__ 0
 #endif
 
 sse_t *sse[NUM_OF_SE];	// send sessions, 8-bit key
@@ -77,9 +77,9 @@ err_out:
  *   -3		unknown escaped char
  * >= 0		actual length in buf
  */
-static int de_frame(u8 *frm, u16 frm_len, u8 *buf, u16 size)
+static int de_frame(u8 *frm, u16 frm_len, u8 *buf, u16 *len)
 {
-	int len = -1;
+	int ret=-1;
 	u8 *ch;
 	u8 *p;
 	int find_start_break;
@@ -99,26 +99,26 @@ static int de_frame(u8 *frm, u16 frm_len, u8 *buf, u16 size)
 				if (!find_start_break)
 					find_start_break = 1;
 				else {
-					len = p - buf;
+					ret = 0;
 					goto out;	// success
 				}
 				break;
 			case ESCAPE_CHAR:
 				if (ch-frm+1 + 1 > frm_len) {
-					len = -2;
+					ret = -2;
 					goto out;	// err: end-up by
 							//      escape
 				}
 				switch (*(++ch)) {
 					case ESCAPE_BREAK:
-						if (p-buf + 1 > size)
+						if (p-buf + 1 > *len)
 							// err: no more root
 							//      to store data
 							goto out;
 						*(p++) = BREAK_CHAR;
 						break;
 					case ESCAPE_ESCAPE:
-						if (p-buf + 1 > size)
+						if (p-buf + 1 > *len)
 							// err: no more root
 							//      to store data
 							goto out;
@@ -126,14 +126,13 @@ static int de_frame(u8 *frm, u16 frm_len, u8 *buf, u16 size)
 						break;
 					default:
 						// err: unknown escaped char
-						len = -3;
+						ret = -3;
 						goto out;
 				}
 				break;
 			default:
-				if (p-buf + 1 > size)
-					// err: no more root
-					//      to store data
+				if (p-buf + 1 > *len)
+					// err: no more room to store data
 					goto out;
 				*(p++) = *ch;
 		}
@@ -141,10 +140,10 @@ static int de_frame(u8 *frm, u16 frm_len, u8 *buf, u16 size)
 		// parse next char
 		++ch;
 	}
-	len = p - buf;
 
 out:
-	return len;
+	*len = p - buf;
+	return ret;
 }
 
 static u8 csum8(u8 old, void *d, int len)
@@ -542,7 +541,8 @@ static void proc_data(void *buf, int len)
 	msg_hdr_t *mh = (msg_hdr_t *)fh->data;
 	slice_t *slice = (slice_t *)mh->data;
 	se_key_t key;
-	u8 s, t, n_slices;
+	u8 n_possible;
+	u8 n_slices;
 	rse_t *se;
 	u8 csum_save;
 
@@ -563,12 +563,13 @@ static void proc_data(void *buf, int len)
 
 	// in FRAME_TYPE_DATA frame, mh->len hold the actual length of data
 
-	// according to the de-frame length, s is the possible max num of
-	// slices
-	s = (len - FRM_MSG_HDR_LEN) / sizeof *slice;
+	// according to the de-frame length, n_possible is the possible max
+	// num of slices
+	n_possible = (len - FRM_MSG_HDR_LEN) / sizeof *slice;
 	// according to the msg hdr's length indication (additional zeros at
-	// the tail is possible), t is the num of slices
-	t = (mh->len + SLICE_DATA_LEN - 1)/SLICE_DATA_LEN;
+	// the tail is possible), n_slices is the num of slices
+	n_slices = (mh->len + SLICE_DATA_LEN - 1)/SLICE_DATA_LEN;
+#if 0
 	if (s < t) {
 #if __MILO_INFO_LEVEL__ >= 1
 		DBG("(proc data)msg length invalid(%d, frm len=%d)\n",
@@ -576,7 +577,9 @@ static void proc_data(void *buf, int len)
 #endif
 		return;
 	}
-	n_slices = t;
+#endif
+	if (n_slices > MAX_SLICE_NUM)
+		n_slices = MAX_SLICE_NUM;
 
 	key.mac = fh->src;
 	se = get_rse(&key);
@@ -617,7 +620,7 @@ static void proc_data(void *buf, int len)
 		se->n_slices = n_slices;
 		se->completed = false;
 	}
-	patch_rse(se, (slice_t *)mh->data, n_slices);
+	patch_rse(se, (slice_t *)mh->data, n_possible);
 	send_ack(fh->src, fh->dst, se);
 
 	if (test_all_bits_set(se->bitmap, n_slices)) {
@@ -713,14 +716,8 @@ static void proc_patch(void *buf, int len)
 	// in FRAME_TYPE_PATCH frame, mh->len hold n_slices
 	// calculate max possible num of slices first
 	n_slices = (len - FRM_MSG_HDR_LEN) / sizeof *slice;
-	if (n_slices < mh->len) {
-#if __MILO_INFO_LEVEL__ >= 2
-		DBG("(proc patch)msg length invalid(%d, frm len=%d)\n",
-				mh->len, len);
-#endif
-		return;
-	}
-	n_slices = mh->len;
+	if (n_slices > mh->len)
+		n_slices = mh->len;
 
 	key.mac = fh->src;
 	se = get_rse(&key);
@@ -933,6 +930,12 @@ static void proc_ack_part(void *buf, int len)
 #if __MILO_INFO_LEVEL__ >= 2
 		DBG("(proc ack part)frm data's too short(%d)\n",
 				len - sizeof *fh);
+#endif
+		return;
+	}
+	if (mh->len != len - FRM_MSG_HDR_LEN) {
+#if __MILO_INFO_LEVEL__ >= 3
+		DBG("(proc ack part)msg len invalid\n");
 #endif
 		return;
 	}
@@ -1271,14 +1274,16 @@ int lower_put(void *raw_frm, int rawlen)
 	msg_hdr_t *mh = (msg_hdr_t *)fh->data;
 	se_key_t key;
 	u8 csum_save;
-	int len;
+	u16 len;
+	int ret;
 
-	len = de_frame(raw_frm, rawlen, buf, sizeof buf);
-	if (len < 0) {
+	len = sizeof buf;
+	ret = de_frame(raw_frm, rawlen, buf, &len);
+	if (ret < 0) {
 #if __MILO_INFO_LEVEL__ >= 3
 		DBG("(lower put)de-frame err(%d)\n", len);
 #endif
-		goto err_out;
+		// continue trying to get some useful data
 	}
 	if (len < sizeof *fh) {
 #if __MILO_INFO_LEVEL__ >= 3
@@ -1291,13 +1296,6 @@ int lower_put(void *raw_frm, int rawlen)
 	if (csum_save != csum8(0, fh, sizeof *fh)) {
 #if __MILO_INFO_LEVEL__ >= 3
 		DBG("(lower put)frame csum err\n");
-#endif
-		goto err_out;
-	}
-	if (fh->len != len) {
-#if __MILO_INFO_LEVEL__ >= 1
-		DBG("(lower put)frame length mismatch"	\
-				"(fh->len=%d, len=%d)\n", fh->len, len);
 #endif
 		goto err_out;
 	}

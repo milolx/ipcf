@@ -20,7 +20,8 @@
 
 #define FRM_MSG_HDR_LEN	(sizeof(frm_hdr_t) + sizeof(msg_hdr_t))
 #define LINK_DATA_MAX	(LINK_MTU - FRM_MSG_HDR_LEN)
-#define MAX_SLICE_NUM	((LINK_MTU - FRM_MSG_HDR_LEN - 2)/sizeof(slice_t))		// should <=256
+// only max *possible* num of slices
+#define MAX_SLICE_NUM	((LINK_MTU - FRM_MSG_HDR_LEN)/sizeof(slice_t))		// should <=256
 #define BITMAP32_SIZE	((MAX_SLICE_NUM+31)/32)
 
 
