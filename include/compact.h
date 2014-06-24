@@ -4,6 +4,11 @@
 #include "config.h"
 #include "types.h"
 #include "ipv4.h"
+#include "list.h"
+
+#define MAX_DATA_LENGTH		2000
+#define SOFT_TIMEOUT_INTERVAL	(10*1000)	// in msec
+#define N_ID_BITS		8
 
 typedef struct {
 	u32 saddr;
@@ -63,5 +68,11 @@ struct orig_hdr {
 		struct udphdr udp;
 	}t;
 };
+
+typedef struct {
+	struct list node;
+	u16 len;
+	u8 data[MAX_DATA_LENGTH];
+}pkt_t;
 
 #endif /* __COMPACT_H__ */

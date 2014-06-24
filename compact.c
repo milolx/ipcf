@@ -8,16 +8,6 @@
 #include "idpool.h"
 #include "ts.h"
 
-#define MAX_DATA_LENGTH		2000
-#define SOFT_TIMEOUT_INTERVAL	(10*1000)	// in msec
-#define N_ID_BITS		8
-
-typedef struct {
-	struct list node;
-	u16 len;
-	u8 data[MAX_DATA_LENGTH];
-}pkt_t;
-
 typedef struct {
 	struct hmap_node node;
 #define STATE_NEW		1
@@ -624,7 +614,7 @@ can_not_compact:
 }
 
 // return 0 on success
-int recv_compress(void *cpkt, int len, pkt_t *ippkt, pkt_t *send_back_pkt)
+int recv_compress(void *cpkt, int len, pkt_t **ippkt, pkt_t **send_back_pkt)
 {
 	struct iphdr *iphdr = (struct iphdr *)cpkt;
 	chdr_t *chdr = (chdr_t *)cpkt;
@@ -633,12 +623,13 @@ int recv_compress(void *cpkt, int len, pkt_t *ippkt, pkt_t *send_back_pkt)
 	rkey_t rkey;
 	uint32_t hval;
 
-	send_back_pkt = NULL;
+	*ippkt = NULL;
+	*send_back_pkt = NULL;
 
 	if (iphdr->version == 4 && iphdr->ihl >= 5) {
 		if (!csum(iphdr, sizeof *iphdr)) {
 			// ipv4
-			ippkt = recv_untouched_ip(cpkt);
+			*ippkt = recv_untouched_ip(cpkt);
 			return 0;
 		}
 	}
@@ -657,7 +648,7 @@ int recv_compress(void *cpkt, int len, pkt_t *ippkt, pkt_t *send_back_pkt)
 		case CTYPE_FRM_CTL:
 			switch (chdr->i) {
 				case CTYPE_CTL_REQ:
-					send_back_pkt = build_ack(cpkt);
+					*send_back_pkt = build_ack(cpkt);
 					break;
 				case CTYPE_CTL_ACK:
 					sflow_rindex[chdr->id]->state = STATE_ESTABLISHED;
@@ -670,13 +661,13 @@ int recv_compress(void *cpkt, int len, pkt_t *ippkt, pkt_t *send_back_pkt)
 			}
 			break;
 		case CTYPE_FRM_TCP:
-			ippkt = recv_tcp(cpkt, len, rflow);
+			*ippkt = recv_tcp(cpkt, len, rflow);
 			break;
 		case CTYPE_FRM_UDP:
-			ippkt = recv_udp(cpkt, len, rflow);
+			*ippkt = recv_udp(cpkt, len, rflow);
 			break;
 		case CTYPE_FRM_RAW:
-			ippkt = recv_raw(cpkt, len, rflow);
+			*ippkt = recv_raw(cpkt, len, rflow);
 			break;
 		default:
 			assert(1);
