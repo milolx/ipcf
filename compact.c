@@ -45,23 +45,15 @@ typedef struct {
 	sflow_node_t *flow;
 }frag_node_t;
 
-struct hmap sflow_hmap;
-struct hmap rflow_hmap;
-struct hmap frag_hmap;
+static struct hmap sflow_hmap;
+static struct hmap rflow_hmap;
+static struct hmap frag_hmap;
 
 idpool_t *idp;
 static sflow_node_t* sflow_rindex[1<<N_ID_BITS];
 
 
-void compact_init()
-{
-	hmap_init(&sflow_hmap);
-	hmap_init(&rflow_hmap);
-
-	idp = init_idpool(1<<N_ID_BITS);
-}
-
-frag_node_t* locate_in_frag_hmap(u16 ipid)
+static frag_node_t* locate_in_frag_hmap(u16 ipid)
 {
 	frag_node_t *n;
 	u32 hval;
@@ -74,7 +66,7 @@ frag_node_t* locate_in_frag_hmap(u16 ipid)
 	return NULL;
 }
 
-skey_t get_sflow_key(void *ippkt)
+static skey_t get_sflow_key(void *ippkt)
 {
 	struct iphdr *iphdr = (struct iphdr *)ippkt;
 	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof *iphdr);
@@ -112,7 +104,7 @@ skey_t get_sflow_key(void *ippkt)
 	return k;
 }
 
-sflow_node_t* get_sflow_by_hash(u32 hval, skey_t *skey)
+static sflow_node_t* get_sflow_by_hash(u32 hval, skey_t *skey)
 {
 	sflow_node_t *n;
 
@@ -123,7 +115,7 @@ sflow_node_t* get_sflow_by_hash(u32 hval, skey_t *skey)
 	return NULL;
 }
 
-sflow_node_t* build_sflow_by_hash(u32 hval, skey_t *skey, void *ippkt, u8 fid)
+static sflow_node_t* build_sflow_by_hash(u32 hval, skey_t *skey, void *ippkt, u8 fid)
 {
 	struct iphdr *iphdr = (struct iphdr *)ippkt;
 	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof *iphdr);
@@ -145,12 +137,12 @@ sflow_node_t* build_sflow_by_hash(u32 hval, skey_t *skey, void *ippkt, u8 fid)
 	hmap_insert(&sflow_hmap, &n->node, hval);
 }
 
-void touch_flow(sflow_node_t* flow)
+static void touch_flow(sflow_node_t* flow)
 {
 	flow->soft_timeout = ts_msec() + SOFT_TIMEOUT_INTERVAL;
 }
 
-void add_to_pkt_list(struct list *pkt_list, void *data, u16 len)
+static void add_to_pkt_list(struct list *pkt_list, void *data, u16 len)
 {
 	pkt_t *pkt;
 
@@ -160,7 +152,7 @@ void add_to_pkt_list(struct list *pkt_list, void *data, u16 len)
 	list_push_back(pkt_list, &pkt->node);
 }
 
-void build_ctl(struct list *pkt_list, sflow_node_t *sflow)
+static void build_ctl(struct list *pkt_list, sflow_node_t *sflow)
 {
 	pkt_t *pkt;
 	chdr_t *ctl_hdr;
@@ -179,14 +171,14 @@ void build_ctl(struct list *pkt_list, sflow_node_t *sflow)
 		pkt->len += sizeof sflow->hdr.t.tcp;
 	}
 	else if (sflow->hdr.ip.protocol == PROTOCOL_UDP) {
-		memcpy(pkt->data + pkt->len, &sflow->hdr.t.tcp, sizeof sflow->hdr.t.tcp);
-		pkt->len += sizeof sflow->hdr.t.tcp;
+		memcpy(pkt->data + pkt->len, &sflow->hdr.t.udp, sizeof sflow->hdr.t.udp);
+		pkt->len += sizeof sflow->hdr.t.udp;
 	}
 
 	list_push_back(pkt_list, &pkt->node);
 }
 
-void build_cpkt(struct list *pkt_list, sflow_node_t *sflow, void *ippkt)
+static void build_cpkt(struct list *pkt_list, sflow_node_t *sflow, void *ippkt)
 {
 	struct iphdr *iphdr = (struct iphdr *)ippkt;
 	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof *iphdr);
@@ -295,101 +287,7 @@ void build_cpkt(struct list *pkt_list, sflow_node_t *sflow, void *ippkt)
 	list_push_back(pkt_list, &pkt->node);
 }
 
-void timer_event()
-{
-	sflow_node_t *flow;
-	long long int now = ts_msec();
-
-	HMAP_FOR_EACH(flow, node, &sflow_hmap) {
-		if (now < flow->soft_timeout)
-			continue;
-
-		/*
-		// timeout
-		switch (flow->state) {
-			case STATE_NEW:
-				break;
-			case STATE_PENDING:
-				if (timout1)
-					remove_flow();
-				break;
-			case STATE_ESTABLISHED:
-				if (timout2)
-					remove_flow();
-				break;
-			default:
-				break;
-		}
-		*/
-	}
-}
-
-void xmit_compress(void *ippkt, struct list *pkt_list)
-{
-	struct iphdr *iphdr = (struct iphdr *)ippkt;
-	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof *iphdr);
-	struct udphdr *udphdr = (struct udphdr *)(ippkt + sizeof *iphdr);
-
-	skey_t skey;
-	u32 hval;
-	sflow_node_t *sflow;
-
-	list_init(pkt_list);
-
-	if (iphdr->version != 4 || iphdr->ihl != 5) {
-		// not ipv4 or has ip options or (not tcp or udp)
-		goto can_not_compact;
-	}
-	if (!csum(iphdr, sizeof *iphdr)) {
-		// checksum error or even not a ip pkt
-		goto can_not_compact;
-	}
-
-	sflow = NULL;
-
-	// the actrual key for hash is frag-or-not related
-	skey = get_sflow_key(ippkt);
-	hval = hash_bytes(&skey, sizeof skey);
-
-	sflow = get_sflow_by_hash(hval, &skey);
-
-	if (!sflow) {	// new flow
-		u8 fid;
-
-		fid = get_id(idp);
-		// reverse-locate flow entry also via fid
-
-		sflow = build_sflow_by_hash(hval, &skey, ippkt, fid);
-		sflow_rindex[fid] = sflow;
-	}
-
-	assert(sflow);
-
-	switch (sflow->state) {
-		case STATE_NEW:
-			build_ctl(pkt_list, sflow);
-			add_to_pkt_list(pkt_list, ippkt, iphdr->tot_len);
-			sflow->state = STATE_PENDING;
-			break;
-		case STATE_PENDING:
-			add_to_pkt_list(pkt_list, ippkt, iphdr->tot_len);
-			break;
-		case STATE_ESTABLISHED:
-			build_cpkt(pkt_list, sflow, ippkt);
-			break;
-		default:
-			assert(1);	// never happen
-			break;
-	}
-
-	touch_flow(sflow);
-	return;
-
-can_not_compact:
-	add_to_pkt_list(pkt_list, ippkt, iphdr->tot_len);
-}
-
-rflow_node_t* get_rflow_by_hash(u32 hval, rkey_t *rkey)
+static rflow_node_t* get_rflow_by_hash(u32 hval, rkey_t *rkey)
 {
 	rflow_node_t *n;
 
@@ -400,7 +298,7 @@ rflow_node_t* get_rflow_by_hash(u32 hval, rkey_t *rkey)
 	return NULL;
 }
 
-pkt_t* recv_untouched_ip(void *ippkt)
+static pkt_t* recv_untouched_ip(void *ippkt)
 {
 	struct iphdr *iphdr = (struct iphdr *)ippkt;
 	pkt_t *pkt;
@@ -414,7 +312,7 @@ pkt_t* recv_untouched_ip(void *ippkt)
 	return pkt;
 }
 
-pkt_t* build_ack(void *cpkt)
+static pkt_t* build_ack(void *cpkt)
 {
 	chdr_t *chdr = (chdr_t *)cpkt;
 	pkt_t *pkt;
@@ -431,7 +329,7 @@ pkt_t* build_ack(void *cpkt)
 	return pkt;
 }
 
-rflow_node_t* build_rflow_by_hash(uint32_t hval, rkey_t *rkey, void *cpkt)
+static rflow_node_t* build_rflow_by_hash(uint32_t hval, rkey_t *rkey, void *cpkt)
 {
 	chdr_t *chdr = (chdr_t *)cpkt;
 	struct iphdr *iphdr = (struct iphdr *)(cpkt + sizeof *chdr);
@@ -455,7 +353,7 @@ rflow_node_t* build_rflow_by_hash(uint32_t hval, rkey_t *rkey, void *cpkt)
 	hmap_insert(&rflow_hmap, &n->node, hval);
 }
 
-rkey_t get_rflow_key(chdr_t *chdr)
+static rkey_t get_rflow_key(chdr_t *chdr)
 {
 	static rkey_t k;
 
@@ -465,7 +363,7 @@ rkey_t get_rflow_key(chdr_t *chdr)
 	return k;
 }
 
-pkt_t* recv_tcp(void *cpkt, u16 len, rflow_node_t *rflow)
+static pkt_t* recv_tcp(void *cpkt, u16 len, rflow_node_t *rflow)
 {
 	chdr_t *chdr = (chdr_t *)cpkt;
 	pkt_t *pkt;
@@ -551,7 +449,7 @@ pkt_t* recv_tcp(void *cpkt, u16 len, rflow_node_t *rflow)
 	return pkt;
 }
 
-pkt_t* recv_udp(void *cpkt, u16 len, rflow_node_t *rflow)
+static pkt_t* recv_udp(void *cpkt, u16 len, rflow_node_t *rflow)
 {
 	chdr_t *chdr = (chdr_t *)cpkt;
 	pkt_t *pkt;
@@ -586,7 +484,7 @@ pkt_t* recv_udp(void *cpkt, u16 len, rflow_node_t *rflow)
 	return pkt;
 }
 
-pkt_t* recv_raw(void *cpkt, u16 len, rflow_node_t *rflow)
+static pkt_t* recv_raw(void *cpkt, u16 len, rflow_node_t *rflow)
 {
 	chdr_t *chdr = (chdr_t *)cpkt;
 	pkt_t *pkt;
@@ -621,6 +519,108 @@ pkt_t* recv_raw(void *cpkt, u16 len, rflow_node_t *rflow)
 	iphdr->check = csum(iphdr, sizeof *iphdr);
 
 	return pkt;
+}
+
+void timer_event()
+{
+	sflow_node_t *flow;
+	long long int now = ts_msec();
+
+	HMAP_FOR_EACH(flow, node, &sflow_hmap) {
+		if (now < flow->soft_timeout)
+			continue;
+
+		/*
+		// timeout
+		switch (flow->state) {
+			case STATE_NEW:
+				break;
+			case STATE_PENDING:
+				if (timout1)
+					remove_flow();
+				break;
+			case STATE_ESTABLISHED:
+				if (timout2)
+					remove_flow();
+				break;
+			default:
+				break;
+		}
+		*/
+	}
+}
+
+void compact_init()
+{
+	hmap_init(&sflow_hmap);
+	hmap_init(&rflow_hmap);
+
+	idp = init_idpool(1<<N_ID_BITS);
+}
+
+void xmit_compress(void *ippkt, struct list *pkt_list)
+{
+	struct iphdr *iphdr = (struct iphdr *)ippkt;
+	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof *iphdr);
+	struct udphdr *udphdr = (struct udphdr *)(ippkt + sizeof *iphdr);
+
+	skey_t skey;
+	u32 hval;
+	sflow_node_t *sflow;
+
+	list_init(pkt_list);
+
+	if (iphdr->version != 4 || iphdr->ihl != 5) {
+		// not ipv4 or has ip options
+		goto can_not_compact;
+	}
+	if (!csum(iphdr, sizeof *iphdr)) {
+		// checksum error or even not a ip pkt
+		goto can_not_compact;
+	}
+
+	sflow = NULL;
+
+	// the actrual key for hash is frag-or-not related
+	skey = get_sflow_key(ippkt);
+	hval = hash_bytes(&skey, sizeof skey);
+
+	sflow = get_sflow_by_hash(hval, &skey);
+
+	if (!sflow) {	// new flow
+		u8 fid;
+
+		fid = get_id(idp);
+		// reverse-locate flow entry also via fid
+
+		sflow = build_sflow_by_hash(hval, &skey, ippkt, fid);
+		sflow_rindex[fid] = sflow;
+	}
+
+	assert(sflow);
+
+	switch (sflow->state) {
+		case STATE_NEW:
+			build_ctl(pkt_list, sflow);
+			add_to_pkt_list(pkt_list, ippkt, iphdr->tot_len);
+			sflow->state = STATE_PENDING;
+			break;
+		case STATE_PENDING:
+			add_to_pkt_list(pkt_list, ippkt, iphdr->tot_len);
+			break;
+		case STATE_ESTABLISHED:
+			build_cpkt(pkt_list, sflow, ippkt);
+			break;
+		default:
+			assert(1);	// never happen
+			break;
+	}
+
+	touch_flow(sflow);
+	return;
+
+can_not_compact:
+	add_to_pkt_list(pkt_list, ippkt, iphdr->tot_len);
 }
 
 // return 0 on success
