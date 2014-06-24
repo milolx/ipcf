@@ -7,7 +7,7 @@
 #define BUFSIZE		2048
 
 #define SERV_PORT	6666
-#define DEST_IP		"10.0.8.99"
+#define DEST_IP		"10.0.6.18"
 #define DEST_PORT	6666
 
 static int sockfd;
