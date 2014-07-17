@@ -161,7 +161,7 @@ static u16 csum16(u16 old, void *d, int len)
 	return crc16(old, d, len);
 }
 
-static void fill_slice_k(u8 k, void *from, u8 len, void *dest)
+static void fill_slice_k(u8 k, void *from, u16 len, void *dest)
 {
 	slice_t *slice = (slice_t *)dest;
 
@@ -451,7 +451,7 @@ static void try_lower_send(sse_t *se)
 
 static void cp_slice_to_rse(rse_t *se, slice_t *s)
 {
-	u8 len;
+	u16 len;
 	u16 csum_save;
 
 	csum_save = s->csum;
