@@ -12,12 +12,12 @@
 
 #define NUM_OF_SE	256	// max num of r/s sessions, 8-bit mac as key
 #define LINK_MTU	1000
-//#define SLICE_DATA_LEN	32
-#define SLICE_DATA_LEN	950
+#define SLICE_DATA_LEN	32
+//#define SLICE_DATA_LEN	950
 #define IDLE_TIMEOUT	(10 * 1000)	// in ms
 //#define ACK_TIMEOUT	(3 * 1000)	// in ms
 #define ACK_TIMEOUT	(0)		// 0 for debug
-#define MAX_RETRY_TIMES	10
+#define MAX_RETRY_TIMES	5
 
 #define FRM_MSG_HDR_LEN	(sizeof(frm_hdr_t) + sizeof(msg_hdr_t))
 #define LINK_DATA_MAX	(LINK_MTU - FRM_MSG_HDR_LEN)
@@ -48,11 +48,14 @@ typedef struct {
 //}__attribute__((packed))frm_hdr_t;
 
 typedef struct {
+	u32 d_csum;
 	u16 len;
+	u16 len2;
 	u8 seq;
 	u8 csum;
 	u8 data[0];
-}msg_hdr_t;
+}__attribute__((packed))msg_hdr_t;
+//}msg_hdr_t;
 //}__attribute__((packed))msg_hdr_t;
 
 typedef struct {
@@ -86,7 +89,8 @@ typedef struct {
 	light_lock_t lock;
 	long long int idle_timeout;
 	long long int ack_timeout;
-	int retry;
+	int data_retry;
+	int ack_retry;
 	bool is_waiting;	// is waiting for ack?
 	u8 seq;
 	struct list pkt_list;
@@ -100,8 +104,11 @@ typedef struct {
 	u8 n_slices;	// recv session has only one data node,
 			// so, we have n_slices here
 	u16 msglen;
+	u32 d_csum;
 	u8 data[LINK_MTU];
 	bool completed;
+	bool nak;	// when set to true, force not ack all pkts
+			// make the sender resend the whole frm
 }rse_t;	//recv session
 
 void proc_timer(void);

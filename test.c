@@ -31,6 +31,7 @@ int main()
 	int ret;
 	int n;
 	int fail = 0;
+	bool again = true;
 	unsigned long long tot = 0;
 
 	split_init();
@@ -46,17 +47,16 @@ int main()
 		random_bytes(s, n);
 #ifdef VERBOSE
 		printf("-------------\n");
-		printf("init, n=%d\n", n);
 
 		printf("\nsend buf\n");
-		hex_dump(stdout, s, n, 0, true);
+		//hex_dump(stdout, s, n, 0, true);
 #endif
 		n = upper_send(2, 1, s, n);
 		tot += n;
 		printf("tot=%llu\n", tot);
 		// the return value 'n' is the actural submitted length
 #ifdef VERBOSE
-		printf("n=%d\n", n);
+		printf("%d bytes accepted\n", n);
 #endif
 
 retry:
@@ -72,20 +72,23 @@ retry:
 			len = sizeof low;
 			ret = lower_fetch(low, &len);
 #ifdef VERBOSE
-			printf("ret=%d, len=%d\n", ret, len);
-			hex_dump(stdout, low, len, 0, true);
+			printf("ret=%d, len=%d, type=%d\n", ret, len, low[3]);
+			//hex_dump(stdout, low, len, 0, true);
 #endif
+		//printf("%d %d\n", len, low[3]);
+		//if (low[3] == 4 && len < 50)
+		//	hex_dump(stdout, low, len, 0, true);
 			if (!len)
 				break;
 
 #ifdef GEN_ERR
 			// generate err
-			//x = len / 20; // err rate <= 5%
-			x = len / 80;
+			x = len / 20; // err rate <= 5%
+			//x = len / 80;
 			if (x) {
 				n_err = random_range(x);	// num of err
 #ifdef VERBOSE
-				printf("len=%d, n_err=%d <------------\n", len, n_err);
+				printf("n_err=%d <------------\n", n_err);
 #endif
 				for (j=0; j < n_err; ++j) {
 					pos = random_range(len);// random pos
@@ -104,7 +107,8 @@ retry:
 		} while(1);
 
 		// simulate timer working proc
-		proc_timer();
+		if (!get_urq_num() && !get_lsq_num())
+			proc_timer();
 		if (get_lsq_num() > 0) {
 			// if timer gen some pkts
 #ifdef VERBOSE
@@ -120,16 +124,37 @@ retry:
 		ret = upper_recv(r, &len);
 #ifdef VERBOSE
 		printf("ret=%d, len=%d\n", ret, len);
-		hex_dump(stdout, r, len, 0, true);
+		//hex_dump(stdout, r, len, 0, true);
 #endif
+		if (again && !len) {
+			++ fail;
+#ifdef VERBOSE
+			printf("len=0, fail=%d\n", fail);
+#endif
+			continue;
+		}
 
 		if (memcmp(s, r, n)) {
-			printf("orig---------------\n");
+			printf("orig(%d)---------------\n", n);
 			hex_dump(stdout, s, n, 0, true);
-			printf("err ---------------\n");
-			hex_dump(stdout, r, n, 0, true);
+			printf("err(%d)---------------\n", len);
+			hex_dump(stdout, r, len, 0, true);
 			printf("#####\n");
 			++ fail;
+#ifdef VERBOSE
+			printf("mismatch, fail=%d\n", fail);
+#endif
+		}
+		else {
+			// "ack all" may lost
+			if (again) {
+				proc_timer();
+				if (get_lsq_num() > 0) {
+					again = false;
+					goto retry;
+				}
+			}
+			again = true;
 		}
 	}
 	printf("\n\nfail=%d\n", fail);
