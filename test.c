@@ -16,6 +16,11 @@ void split_cleanup();
 #define GEN_ERR		1
 //#define VERBOSE	1
 
+#ifdef EVALUATION
+extern unsigned long long e_valid;
+extern unsigned long long e_tot;
+#endif
+
 int main()
 {
 	//u8 s[] = "";
@@ -96,7 +101,8 @@ retry:
 
 #ifdef GEN_ERR
 			// generate err
-			x = len / 20; // err rate <= 5%
+			//x = len / 20; // err rate <= 5%
+			x = len / 80;
 			if (x) {
 				n_err = random_range(x);	// num of err
 #ifdef VERBOSE
@@ -148,6 +154,9 @@ retry:
 		}
 	}
 	printf("\n\nfail=%d\n", fail);
+#ifdef EVALUATION
+	printf("valid=%llu, tot=%llu, ratio=%f\n", e_valid, e_tot, ((float)e_valid)/((float)e_tot));
+#endif
 
 	split_cleanup();
 

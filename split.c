@@ -5,7 +5,12 @@
 #include "dbg.h"
 
 #ifdef __DEBUG__
-#define __MILO_INFO_LEVEL__ 0
+#define __MILO_INFO_LEVEL__	0
+#endif
+
+#ifdef EVALUATION
+unsigned long long e_valid = 0;
+unsigned long long e_tot = 0;
 #endif
 
 sse_t *sse[NUM_OF_SE];	// send sessions, 8-bit key
@@ -1225,6 +1230,9 @@ int upper_recv(u8 *buf, int *len)
 		*len = 0;
 	}
 
+#ifdef EVALUATION
+	e_valid += *len;
+#endif
 	return ret;
 }
 
@@ -1246,9 +1254,12 @@ int lower_fetch(u8 *buf, int *len)
 		node = list_pop_front(&lower_send_list);
 		_unlock(&lower_send_lock);
 		ASSIGN_CONTAINER(s, node, link);
+#ifdef EVALUATION
+		e_tot += s->len;
+#endif
 		if (s->len <= *len) {
 			*len = s->len;
-			memcpy(buf, s->data, *len);
+			memcpy(buf, s->data, s->len);
 		}
 		else {
 			*len = 0;
@@ -1277,6 +1288,9 @@ int lower_put(void *raw_frm, int rawlen)
 	u16 len;
 	int ret;
 
+#ifdef EVALUATION
+	e_tot += rawlen;
+#endif
 	len = sizeof buf;
 	ret = de_frame(raw_frm, rawlen, buf, &len);
 	if (ret < 0) {

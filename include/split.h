@@ -12,7 +12,8 @@
 
 #define NUM_OF_SE	256	// max num of r/s sessions, 8-bit mac as key
 #define LINK_MTU	1000
-#define SLICE_DATA_LEN	32
+//#define SLICE_DATA_LEN	32
+#define SLICE_DATA_LEN	128
 #define IDLE_TIMEOUT	(10 * 1000)	// in ms
 //#define ACK_TIMEOUT	(3 * 1000)	// in ms
 #define ACK_TIMEOUT	(0)		// 0 for debug
