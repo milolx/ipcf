@@ -453,6 +453,7 @@ static void try_lower_send(sse_t *se)
 		node = list_front(&se->pkt_list);
 		ASSIGN_CONTAINER(pkt, node, link);
 		put_lower_send_list(pkt->escaped, pkt->esc_len);
+		//put_lower_send_list(pkt->escaped, FRM_MSG_HDR_LEN);
 		// set ack-timer
 		se->ack_timeout = ts_msec() + ACK_TIMEOUT;
 		se->is_waiting = true;
@@ -1272,8 +1273,16 @@ int upper_send(u8 dmac, u8 smac, void *msg, int msglen)
 
 		len = fh->len;
 		result = en_frame(snode->frm, &len, snode->escaped, LINK_MTU);
-		if (result > 0)
+		if (result > 0) {
+			// reach here means LINK_MTU can hold the whole msg
+			// however we just send the head at the first time
+			// just like establish conn
+			// this is for shorter packet which leads to less err
+			// rate
+			len = FRM_MSG_HDR_LEN;
+			result = en_frame(snode->frm, &len, snode->escaped, LINK_MTU);
 			snode->esc_len = result;
+		}
 		else {
 			int cut_slice;
 
