@@ -643,6 +643,8 @@ static void proc_data(void *buf, int len)
 			se->completed = true;
 		}
 	}
+	else
+		send_ack(fh->src, fh->dst, se);
 	_unlock(&se->lock);
 }
 
@@ -1216,14 +1218,17 @@ void proc_timer(void)
 /*
  * thread safe
  * return value:
+ *   -2		sending in progress
  *   -1		invalid msglen
  *  > 0		actual length buffered (to send)
  */
-int upper_send(u8 dmac, u8 smac, void *msg, int msglen)
+int upper_send(u8 smac, u8 dmac, void *msg, int msglen)
 {
 	send_node_t *snode = (send_node_t *)xmalloc(sizeof *snode);
 	frm_hdr_t *fh = (frm_hdr_t *)snode->frm;
 	msg_hdr_t *mh = (msg_hdr_t *)fh->data;
+	bool empty;
+	int ret = -1;
 
 	sse_t *se;
 	se_key_t key;
@@ -1241,6 +1246,14 @@ int upper_send(u8 dmac, u8 smac, void *msg, int msglen)
 	se = get_sse(&key);
 	if (!se)
 		se = create_sse(&key);
+
+	_lock(&se->lock);
+	empty = list_is_empty(&se->pkt_list);
+	_unlock(&se->lock);
+	if (!empty) {
+		ret = -2;
+		goto err_out;
+	}
 
 	// FIXME: normally, dmac in the first place
 	fh->src = smac;
@@ -1309,7 +1322,7 @@ int upper_send(u8 dmac, u8 smac, void *msg, int msglen)
 
 err_out:
 	free(snode);
-	return -1;
+	return ret;
 }
 
 /*
