@@ -5,7 +5,12 @@
 #include "dbg.h"
 
 #ifdef __DEBUG__
-#define __MILO_INFO_LEVEL__ 1
+#define __MILO_INFO_LEVEL__	1
+#endif
+
+#ifdef EVALUATION
+unsigned long long e_valid = 0;
+unsigned long long e_tot = 0;
 #endif
 
 sse_t *sse[NUM_OF_SE];	// send sessions, 8-bit key
@@ -162,7 +167,7 @@ static u32 csum32(void *d, int len)
 	return crc32c(d, len);
 }
 
-static void fill_slice_k(u8 k, void *from, u8 len, void *dest)
+static void fill_slice_k(u8 k, void *from, u16 len, void *dest)
 {
 	slice_t *slice = (slice_t *)dest;
 
@@ -448,6 +453,7 @@ static void try_lower_send(sse_t *se)
 		node = list_front(&se->pkt_list);
 		ASSIGN_CONTAINER(pkt, node, link);
 		put_lower_send_list(pkt->escaped, pkt->esc_len);
+		//put_lower_send_list(pkt->escaped, FRM_MSG_HDR_LEN);
 		// set ack-timer
 		se->ack_timeout = ts_msec() + ACK_TIMEOUT;
 		se->is_waiting = true;
@@ -456,7 +462,7 @@ static void try_lower_send(sse_t *se)
 
 static void cp_slice_to_rse(rse_t *se, slice_t *s)
 {
-	u8 len;
+	u16 len;
 	u16 csum_save;
 
 	csum_save = s->csum;
@@ -637,6 +643,8 @@ static void proc_data(void *buf, int len)
 			se->completed = true;
 		}
 	}
+	else
+		send_ack(fh->src, fh->dst, se);
 	_unlock(&se->lock);
 }
 
@@ -1210,14 +1218,17 @@ void proc_timer(void)
 /*
  * thread safe
  * return value:
+ *   -2		sending in progress
  *   -1		invalid msglen
  *  > 0		actual length buffered (to send)
  */
-int upper_send(u8 dmac, u8 smac, void *msg, int msglen)
+int upper_send(u8 smac, u8 dmac, void *msg, int msglen)
 {
 	send_node_t *snode = (send_node_t *)xmalloc(sizeof *snode);
 	frm_hdr_t *fh = (frm_hdr_t *)snode->frm;
 	msg_hdr_t *mh = (msg_hdr_t *)fh->data;
+	bool empty;
+	int ret = -1;
 
 	sse_t *se;
 	se_key_t key;
@@ -1235,6 +1246,14 @@ int upper_send(u8 dmac, u8 smac, void *msg, int msglen)
 	se = get_sse(&key);
 	if (!se)
 		se = create_sse(&key);
+
+	_lock(&se->lock);
+	empty = list_is_empty(&se->pkt_list);
+	_unlock(&se->lock);
+	if (!empty) {
+		ret = -2;
+		goto err_out;
+	}
 
 	// FIXME: normally, dmac in the first place
 	fh->src = smac;
@@ -1267,8 +1286,16 @@ int upper_send(u8 dmac, u8 smac, void *msg, int msglen)
 
 		len = fh->len;
 		result = en_frame(snode->frm, &len, snode->escaped, LINK_MTU);
-		if (result > 0)
+		if (result > 0) {
+			// reach here means LINK_MTU can hold the whole msg
+			// however we just send the head at the first time
+			// just like establish conn
+			// this is for shorter packet which leads to less err
+			// rate
+			len = FRM_MSG_HDR_LEN;
+			result = en_frame(snode->frm, &len, snode->escaped, LINK_MTU);
 			snode->esc_len = result;
+		}
 		else {
 			int cut_slice;
 
@@ -1295,7 +1322,7 @@ int upper_send(u8 dmac, u8 smac, void *msg, int msglen)
 
 err_out:
 	free(snode);
-	return -1;
+	return ret;
 }
 
 /*
@@ -1324,6 +1351,9 @@ int upper_recv(u8 *buf, int *len)
 		*len = 0;
 	}
 
+#ifdef EVALUATION
+	e_valid += *len;
+#endif
 	return ret;
 }
 
@@ -1345,9 +1375,12 @@ int lower_fetch(u8 *buf, int *len)
 		node = list_pop_front(&lower_send_list);
 		_unlock(&lower_send_lock);
 		ASSIGN_CONTAINER(s, node, link);
+#ifdef EVALUATION
+		e_tot += s->len;
+#endif
 		if (s->len <= *len) {
 			*len = s->len;
-			memcpy(buf, s->data, *len);
+			memcpy(buf, s->data, s->len);
 		}
 		else {
 			*len = 0;

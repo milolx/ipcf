@@ -13,10 +13,11 @@
 #define NUM_OF_SE	256	// max num of r/s sessions, 8-bit mac as key
 #define LINK_MTU	1000
 #define SLICE_DATA_LEN	32
+//#define SLICE_DATA_LEN	950
 #define IDLE_TIMEOUT	(10 * 1000)	// in ms
 //#define ACK_TIMEOUT	(3 * 1000)	// in ms
 #define ACK_TIMEOUT	(0)		// 0 for debug
-#define MAX_RETRY_TIMES	3
+#define MAX_RETRY_TIMES	5
 
 #define FRM_MSG_HDR_LEN	(sizeof(frm_hdr_t) + sizeof(msg_hdr_t))
 #define LINK_DATA_MAX	(LINK_MTU - FRM_MSG_HDR_LEN)
@@ -63,8 +64,8 @@ typedef struct {
 	u8 seq;
 	u8 data[SLICE_DATA_LEN];
 	u16 csum;
-}slice_t;
-//}__attribute__((packed))slice_t;
+//}slice_t;
+}__attribute__((packed))slice_t;
 
 typedef struct {
 	u8 mac;		// remote mac
