@@ -1,6 +1,19 @@
 #include <stdio.h>
 #include <pthread.h>
+#include <unistd.h>
 #include "compact.h"
+
+extern int tun_init();
+extern int tun_read(char *buf, int n);
+extern int tun_write(char *buf, int n);
+extern int udp_send(char *buf, int n);
+extern int udp_recv(char *buf, int n);
+extern int udp_init();
+
+extern void xmit_compress(void *ippkt, struct list *pkt_list);
+extern int recv_compress(void *cpkt, int len, pkt_t **ippkt,
+		pkt_t **send_back_pkt);
+extern void compact_init();
 
 #define MAX_BUF_SIZE	2000
 
@@ -13,10 +26,16 @@ static void *recv_tun(void *arg)
 
 	while (1) {
 		n = tun_read(buf, MAX_BUF_SIZE);
+		if (n <= 0) {
+			printf("turn_read err, n=%d\n", n);
+			continue;
+		}
 		xmit_compress(buf, &pkt_list);
 		LIST_FOR_EACH(pkt, node, &pkt_list)
-			udp_send(pkt->data, pkt->len);
+			udp_send((char *)pkt->data, pkt->len);
 	}
+
+	return NULL;
 }
 
 static void *recv_udp(void *arg)
@@ -27,12 +46,18 @@ static void *recv_udp(void *arg)
 
 	while (1) {
 		n = udp_recv(buf, MAX_BUF_SIZE);
+		if (n <= 0) {
+			printf("udp_recv, n=%d\n", n);
+			continue;
+		}
 		recv_compress(buf, n, &ippkt, &send_back_pkt);
 		if (ippkt)
-			tun_write(ippkt->data, ippkt->len);
+			tun_write((char *)ippkt->data, ippkt->len);
 		if (send_back_pkt)
-			udp_send(send_back_pkt->data, send_back_pkt->len);
+			udp_send((char *)send_back_pkt->data, send_back_pkt->len);
 	}
+
+	return NULL;
 }
 
 int main()

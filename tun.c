@@ -64,7 +64,6 @@ int tun_alloc(char *dev, int flags)
 void tun_init()
 {
 	char tun_name[IFNAMSIZ];
-	int nread;
 	char cmd[100];
 
 	/* Connect to the device */

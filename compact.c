@@ -7,6 +7,8 @@
 #include "compact.h"
 #include "idpool.h"
 #include "ts.h"
+#include "hash.h"
+#include "csum.h"
 
 typedef struct {
 	struct hmap_node node;
@@ -37,12 +39,13 @@ typedef struct {
 
 static struct hmap sflow_hmap;
 static struct hmap rflow_hmap;
-static struct hmap frag_hmap;
+//static struct hmap frag_hmap;
 
 idpool_t *idp;
 static sflow_node_t* sflow_rindex[1<<N_ID_BITS];
 
 
+#if 0
 static frag_node_t* locate_in_frag_hmap(u16 ipid)
 {
 	frag_node_t *n;
@@ -55,6 +58,7 @@ static frag_node_t* locate_in_frag_hmap(u16 ipid)
 	}
 	return NULL;
 }
+#endif
 
 static skey_t get_sflow_key(void *ippkt)
 {
@@ -125,6 +129,8 @@ static sflow_node_t* build_sflow_by_hash(u32 hval, skey_t *skey, void *ippkt, u8
 	n->fid = fid;
 	n->soft_timeout = ts_msec() + SOFT_TIMEOUT_INTERVAL;
 	hmap_insert(&sflow_hmap, &n->node, hval);
+
+	return n;
 }
 
 static void touch_flow(sflow_node_t* flow)
@@ -341,6 +347,8 @@ static rflow_node_t* build_rflow_by_hash(uint32_t hval, rkey_t *rkey, void *cpkt
 	n->fid = chdr->id;
 	n->soft_timeout = ts_msec() + SOFT_TIMEOUT_INTERVAL;
 	hmap_insert(&rflow_hmap, &n->node, hval);
+
+	return n;
 }
 
 static rkey_t get_rflow_key(chdr_t *chdr)
@@ -551,8 +559,6 @@ void compact_init()
 void xmit_compress(void *ippkt, struct list *pkt_list)
 {
 	struct iphdr *iphdr = (struct iphdr *)ippkt;
-	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof *iphdr);
-	struct udphdr *udphdr = (struct udphdr *)(ippkt + sizeof *iphdr);
 
 	skey_t skey;
 	u32 hval;
