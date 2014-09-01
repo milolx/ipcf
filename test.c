@@ -27,7 +27,7 @@ void split_cleanup();
 #define MAX_BUF_SIZE	2000
 
 static u32 tot = 1;
-static u32 full_ip = 0;
+static u32 full_ip = 1;
 static u32 compact_ip = 0;
 static u32 payload = 0;
 
