@@ -43,7 +43,8 @@ resize(struct hmap *hmap, size_t new_mask)
 
 #ifdef __DEBUG__
 	if (!is_pow2(new_mask + 1)) {
-		printf("hmap err: mask(0x%08x+1) is not pow2\n", new_mask);
+		printf("hmap err: mask(0x%08x+1) is not pow2\n",
+				(unsigned int)new_mask);
 		exit(1);
 	}
 #endif

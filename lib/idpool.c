@@ -14,6 +14,8 @@ idpool_t *init_idpool(int n)
 
 	for (i=0; i<n; ++i)
 		p->pool[i] = i;
+
+	return p;
 }
 
 void cleanup_idpool(idpool_t *p)

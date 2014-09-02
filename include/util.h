@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <arpa/inet.h>
 
 #define OBJECT_OFFSETOF(OBJECT, MEMBER) offsetof(typeof(*(OBJECT)), MEMBER)
 #define OBJECT_CONTAINING(POINTER, OBJECT, MEMBER)                      \

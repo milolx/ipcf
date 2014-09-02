@@ -24,6 +24,8 @@ int udp_init()
 	addr.sin_port = htons(SERV_PORT);
 
 	bind(sockfd, (struct sockaddr *)&addr, sizeof(addr));
+
+	return 0;
 }
 
 int udp_recv(char *buf, int n)
