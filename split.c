@@ -216,6 +216,7 @@ static void set_bit(u32 *map, u8 k)
 	map[offset] |= 1L << i;
 }
 
+#if 0
 static void clr_bit(u32 *map, u8 k)
 {
 	u8 i;
@@ -224,6 +225,7 @@ static void clr_bit(u32 *map, u8 k)
 	i = k & 0x1f;		// mod 32
 	map[offset] &= ~(1L << i);
 }
+#endif
 
 // find first zero pos start from k, but pos <= max
 static int find_first_zero(u32 *map, u8 k, u8 max)
@@ -239,7 +241,7 @@ static int find_first_zero(u32 *map, u8 k, u8 max)
 			return k;
 		else {
 			++cnt;
-			if (++k & 0x1f  == 0)
+			if ((++k & 0x1f) == 0)
 				++x;
 		}
 	}
@@ -253,7 +255,6 @@ static bool test_all_bits_set(u32 *map, u8 n)
 {
 	u8 k = n>>5;		// div 32
 	u8 t = n & 0x1f;	// mod 32
-	u32 x;
 	u8 i;
 
 	for (i=0; i<k; ++i)
@@ -287,6 +288,7 @@ static sse_t *get_sse(se_key_t *k)
 	return se;
 }
 
+#if 0
 static sse_t *remove_sse(se_key_t *k)
 {
 	sse_t *se;
@@ -306,13 +308,15 @@ static sse_t *remove_sse(se_key_t *k)
 		free(se);
 	}
 	_unlock(&sse_lock);
+
+	return se;
 }
+#endif
 
 static sse_t *create_sse(se_key_t *k)
 {
 	sse_t *se = (sse_t *)xmalloc(sizeof *se);
 	sse_t *oldse;
-	int i;
 
 	_lock_init(&se->lock);
 	se->idle_timeout = ts_msec() + IDLE_TIMEOUT;
@@ -362,6 +366,7 @@ static rse_t *get_rse(se_key_t *k)
 	return se;
 }
 
+#if 0
 static rse_t *remove_rse(se_key_t *k)
 {
 	rse_t *se;
@@ -375,12 +380,13 @@ static rse_t *remove_rse(se_key_t *k)
 		free(se);
 	}
 	_unlock(&rse_lock);
+
+	return se;
 }
+#endif
 
 static void reset_rse(rse_t *se)
 {
-	int i;
-
 	if (se) {
 		se->idle_timeout = ts_msec() + IDLE_TIMEOUT;
 		clr_all_bits(se);
@@ -398,7 +404,6 @@ static rse_t *create_rse(se_key_t *k)
 {
 	rse_t *se = (rse_t *)xmalloc(sizeof *se);
 	rse_t *oldse;
-	int i;
 
 	_lock_init(&se->lock);
 	reset_rse(se);
@@ -1111,7 +1116,7 @@ int get_lsq_num()
  *	FRAME_TYPE_ACKR
  *	FRAME_TYPE_PATCH
  */
-static proc_sse_ack_timeout(sse_t *se)
+static void proc_sse_ack_timeout(sse_t *se)
 {
 	struct list *list_node;
 	send_node_t *pkt;
@@ -1403,8 +1408,6 @@ int lower_put(void *raw_frm, int rawlen)
 {
 	u8 buf[LINK_MTU];
 	frm_hdr_t *fh = (frm_hdr_t *)buf;
-	msg_hdr_t *mh = (msg_hdr_t *)fh->data;
-	se_key_t key;
 	u8 csum_save;
 	u16 len;
 	int ret;

@@ -1,3 +1,6 @@
+#include <stdio.h>
+#include <unistd.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <errno.h>
 #include <sys/time.h>
@@ -18,7 +21,7 @@ get_entropy(void *buffer, size_t n)
 
 	fd = open(urandom, O_RDONLY);
 	if (fd < 0) {
-		perror("%s\n", urandom);
+		perror(urandom);
 		return errno;
 	}
 

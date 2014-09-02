@@ -84,7 +84,8 @@ hex_dump(FILE *stream, const void *buf_, size_t size, uintptr_t ofs, bool ascii)
 
 		/* Print line. */
 
-		fprintf(stream, "%04x  ", (uintmax_t) ((int)(ofs/per_line)*per_line));
+		fprintf(stream, "%04x  ",
+				(unsigned int) ((int)(ofs/per_line)*per_line));
 		for (i = 0; i < start; i++)
 			fprintf(stream, "   ");
 		for (; i < end; i++)
