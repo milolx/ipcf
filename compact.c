@@ -1,5 +1,6 @@
 #include <string.h>
 #include <assert.h>
+#include <arpa/inet.h>
 
 #include "types.h"
 #include "list.h"
@@ -144,7 +145,7 @@ static void add_to_pkt_list(struct list *pkt_list, void *data, u16 len)
 
 	pkt = xmalloc(sizeof *pkt);
 	pkt->len = len;
-	memcpy(pkt->data, data, len);
+	//memcpy(pkt->data, data, len);
 	list_push_back(pkt_list, &pkt->node);
 }
 
@@ -207,8 +208,8 @@ static void build_cpkt(struct list *pkt_list, sflow_node_t *sflow, void *ippkt)
 
 		memcpy(pkt->data + pkt->len,
 				ippkt + sizeof *iphdr,
-				iphdr->tot_len - sizeof *iphdr);
-		pkt->len += iphdr->tot_len - sizeof *iphdr;
+				ntohs(iphdr->tot_len) - sizeof *iphdr);
+		pkt->len += ntohs(iphdr->tot_len) - sizeof *iphdr;
 
 		list_push_back(pkt_list, &pkt->node);
 	}
@@ -262,8 +263,9 @@ static void build_cpkt(struct list *pkt_list, sflow_node_t *sflow, void *ippkt)
 
 		memcpy(pkt->data + pkt->len,
 				ippkt + sizeof *iphdr + sizeof *tcphdr,
-				iphdr->tot_len - sizeof *iphdr - sizeof *tcphdr);
-		pkt->len += iphdr->tot_len - sizeof *iphdr - sizeof *tcphdr;
+				ntohs(iphdr->tot_len) - sizeof *iphdr
+				- sizeof *tcphdr);
+		pkt->len += ntohs(iphdr->tot_len) - sizeof *iphdr - sizeof *tcphdr;
 	}
 	else if (iphdr->protocol == PROTOCOL_UDP) {
 		chdr->t = CTYPE_FRM_UDP;
@@ -273,8 +275,10 @@ static void build_cpkt(struct list *pkt_list, sflow_node_t *sflow, void *ippkt)
 
 		memcpy(pkt->data + pkt->len,
 				ippkt + sizeof *iphdr + sizeof *udphdr,
-				iphdr->tot_len - sizeof *iphdr - sizeof *udphdr);
-		pkt->len += iphdr->tot_len - sizeof *iphdr - sizeof *udphdr;
+				ntohs(iphdr->tot_len) - sizeof *iphdr
+				- sizeof *udphdr);
+		pkt->len += ntohs(iphdr->tot_len) - sizeof *iphdr
+				- sizeof *udphdr;
 	}
 	else {
 		assert(1);	// never happen
@@ -301,7 +305,7 @@ static pkt_t* recv_untouched_ip(void *ippkt)
 	u16 len;
 
 	pkt = xmalloc(sizeof *pkt);
-	len = iphdr->tot_len <= MAX_DATA_LENGTH ? iphdr->tot_len:MAX_DATA_LENGTH;
+	len = ntohs(iphdr->tot_len) <= MAX_DATA_LENGTH ? ntohs(iphdr->tot_len):MAX_DATA_LENGTH;
 	memcpy(pkt->data, ippkt, len);
 	pkt->len = len;
 
@@ -440,7 +444,7 @@ static pkt_t* recv_tcp(void *cpkt, u16 len, rflow_node_t *rflow)
 			break;
 	}
 
-	iphdr->tot_len = pkt->len;
+	iphdr->tot_len = htons(pkt->len);
 	iphdr->check = 0;
 	iphdr->check = csum(iphdr, sizeof *iphdr);
 
@@ -475,7 +479,7 @@ static pkt_t* recv_udp(void *cpkt, u16 len, rflow_node_t *rflow)
 			len - offset);
 	pkt->len += len - offset;
 
-	iphdr->tot_len = pkt->len;
+	iphdr->tot_len = htons(pkt->len);
 	iphdr->check = 0;
 	iphdr->check = csum(iphdr, sizeof *iphdr);
 
@@ -512,7 +516,7 @@ static pkt_t* recv_raw(void *cpkt, u16 len, rflow_node_t *rflow)
 	memcpy(pkt->data + sizeof *iphdr, cpkt + offset, len - offset);
 	pkt->len += len - offset;
 
-	iphdr->tot_len = pkt->len;
+	iphdr->tot_len = htons(pkt->len);
 	iphdr->check = 0;
 	iphdr->check = csum(iphdr, sizeof *iphdr);
 
@@ -598,11 +602,11 @@ void xmit_compress(void *ippkt, struct list *pkt_list)
 	switch (sflow->state) {
 		case STATE_NEW:
 			build_ctl(pkt_list, sflow);
-			add_to_pkt_list(pkt_list, ippkt, iphdr->tot_len);
+			add_to_pkt_list(pkt_list, ippkt, ntohs(iphdr->tot_len));
 			sflow->state = STATE_PENDING;
 			break;
 		case STATE_PENDING:
-			add_to_pkt_list(pkt_list, ippkt, iphdr->tot_len);
+			add_to_pkt_list(pkt_list, ippkt, ntohs(iphdr->tot_len));
 			break;
 		case STATE_ESTABLISHED:
 			build_cpkt(pkt_list, sflow, ippkt);
@@ -616,7 +620,8 @@ void xmit_compress(void *ippkt, struct list *pkt_list)
 	return;
 
 can_not_compact:
-	add_to_pkt_list(pkt_list, ippkt, iphdr->tot_len);
+	add_to_pkt_list(pkt_list, ippkt, ntohs(iphdr->tot_len));
+	return;
 }
 
 // return 0 on success
