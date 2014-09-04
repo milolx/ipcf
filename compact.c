@@ -1,5 +1,6 @@
 #include <string.h>
 #include <assert.h>
+#include <arpa/inet.h>
 
 #include "types.h"
 #include "list.h"
@@ -73,8 +74,8 @@ static skey_t get_sflow_key(void *ippkt)
 	k.saddr = iphdr->saddr;
 	k.daddr = iphdr->daddr;
 	k.proto = iphdr->protocol;
-	if ((iphdr->frag_off & FRAG_FLAG_MF_MASK)
-			|| (iphdr->frag_off & FRAG_OFF_MASK)
+	if ((ntohs(iphdr->frag_off) & FRAG_FLAG_MF_MASK)
+			|| (ntohs(iphdr->frag_off) & FRAG_OFF_MASK)
 			|| ((iphdr->protocol != PROTOCOL_TCP)
 				&& (iphdr->protocol != PROTOCOL_UDP))) {
 		k.sport = 0;
@@ -193,22 +194,23 @@ static void build_cpkt(struct list *pkt_list, sflow_node_t *sflow, void *ippkt)
 	if (sflow->skey.ipid) {
 		chdr->t = CTYPE_FRM_RAW;
 
-		if (iphdr->frag_off & FRAG_FLAG_MF_MASK)
+		if (ntohs(iphdr->frag_off) & FRAG_FLAG_MF_MASK)
 			chdr->i |= CTYPE_RAW_MFBIT;
-		if (iphdr->frag_off & FRAG_OFF_MASK) {
+		if (ntohs(iphdr->frag_off) & FRAG_OFF_MASK) {
 			u16 frag_off;
 
 			chdr->i |= CTYPE_RAW_FBIT;
 
-			frag_off = iphdr->frag_off & FRAG_OFF_MASK;
+			frag_off = ntohs(iphdr->frag_off) & FRAG_OFF_MASK;
+			frag_off = htons(frag_off);
 			memcpy(pkt->data + pkt->len, &frag_off, sizeof frag_off);
 			pkt->len += sizeof frag_off;
 		}
 
 		memcpy(pkt->data + pkt->len,
 				ippkt + sizeof *iphdr,
-				iphdr->tot_len - sizeof *iphdr);
-		pkt->len += iphdr->tot_len - sizeof *iphdr;
+				ntohs(iphdr->tot_len) - sizeof *iphdr);
+		pkt->len += ntohs(iphdr->tot_len) - sizeof *iphdr;
 
 		list_push_back(pkt_list, &pkt->node);
 	}
@@ -262,8 +264,9 @@ static void build_cpkt(struct list *pkt_list, sflow_node_t *sflow, void *ippkt)
 
 		memcpy(pkt->data + pkt->len,
 				ippkt + sizeof *iphdr + sizeof *tcphdr,
-				iphdr->tot_len - sizeof *iphdr - sizeof *tcphdr);
-		pkt->len += iphdr->tot_len - sizeof *iphdr - sizeof *tcphdr;
+				ntohs(iphdr->tot_len) - sizeof *iphdr
+				- sizeof *tcphdr);
+		pkt->len += ntohs(iphdr->tot_len) - sizeof *iphdr - sizeof *tcphdr;
 	}
 	else if (iphdr->protocol == PROTOCOL_UDP) {
 		chdr->t = CTYPE_FRM_UDP;
@@ -273,8 +276,10 @@ static void build_cpkt(struct list *pkt_list, sflow_node_t *sflow, void *ippkt)
 
 		memcpy(pkt->data + pkt->len,
 				ippkt + sizeof *iphdr + sizeof *udphdr,
-				iphdr->tot_len - sizeof *iphdr - sizeof *udphdr);
-		pkt->len += iphdr->tot_len - sizeof *iphdr - sizeof *udphdr;
+				ntohs(iphdr->tot_len) - sizeof *iphdr
+				- sizeof *udphdr);
+		pkt->len += ntohs(iphdr->tot_len) - sizeof *iphdr
+				- sizeof *udphdr;
 	}
 	else {
 		assert(1);	// never happen
@@ -301,7 +306,7 @@ static pkt_t* recv_untouched_ip(void *ippkt)
 	u16 len;
 
 	pkt = xmalloc(sizeof *pkt);
-	len = iphdr->tot_len <= MAX_DATA_LENGTH ? iphdr->tot_len:MAX_DATA_LENGTH;
+	len = ntohs(iphdr->tot_len) <= MAX_DATA_LENGTH ? ntohs(iphdr->tot_len):MAX_DATA_LENGTH;
 	memcpy(pkt->data, ippkt, len);
 	pkt->len = len;
 
@@ -440,7 +445,7 @@ static pkt_t* recv_tcp(void *cpkt, u16 len, rflow_node_t *rflow)
 			break;
 	}
 
-	iphdr->tot_len = pkt->len;
+	iphdr->tot_len = htons(pkt->len);
 	iphdr->check = 0;
 	iphdr->check = csum(iphdr, sizeof *iphdr);
 
@@ -475,7 +480,7 @@ static pkt_t* recv_udp(void *cpkt, u16 len, rflow_node_t *rflow)
 			len - offset);
 	pkt->len += len - offset;
 
-	iphdr->tot_len = pkt->len;
+	iphdr->tot_len = htons(pkt->len);
 	iphdr->check = 0;
 	iphdr->check = csum(iphdr, sizeof *iphdr);
 
@@ -502,17 +507,21 @@ static pkt_t* recv_raw(void *cpkt, u16 len, rflow_node_t *rflow)
 	iphdr->frag_off = 0;
 	if (chdr->i & CTYPE_RAW_FBIT) {
 		memcpy(&iphdr->frag_off, cpkt + offset, sizeof iphdr->frag_off);
+		iphdr->frag_off = ntohs(iphdr->frag_off);
 		iphdr->frag_off &= FRAG_OFF_MASK;
+		iphdr->frag_off = htons(iphdr->frag_off);
 		offset += sizeof iphdr->frag_off;
 	}
 	if (chdr->i & CTYPE_RAW_MFBIT) {
+		iphdr->frag_off = ntohs(iphdr->frag_off);
 		iphdr->frag_off |= FRAG_FLAG_MF_MASK;
+		iphdr->frag_off = htons(iphdr->frag_off);
 	}
 
 	memcpy(pkt->data + sizeof *iphdr, cpkt + offset, len - offset);
 	pkt->len += len - offset;
 
-	iphdr->tot_len = pkt->len;
+	iphdr->tot_len = htons(pkt->len);
 	iphdr->check = 0;
 	iphdr->check = csum(iphdr, sizeof *iphdr);
 
@@ -570,7 +579,7 @@ void xmit_compress(void *ippkt, struct list *pkt_list)
 		// not ipv4 or has ip options
 		goto can_not_compact;
 	}
-	if (!csum(iphdr, sizeof *iphdr)) {
+	if (csum(iphdr, sizeof *iphdr)) {
 		// checksum error or even not a ip pkt
 		goto can_not_compact;
 	}
@@ -598,11 +607,11 @@ void xmit_compress(void *ippkt, struct list *pkt_list)
 	switch (sflow->state) {
 		case STATE_NEW:
 			build_ctl(pkt_list, sflow);
-			add_to_pkt_list(pkt_list, ippkt, iphdr->tot_len);
+			add_to_pkt_list(pkt_list, ippkt, ntohs(iphdr->tot_len));
 			sflow->state = STATE_PENDING;
 			break;
 		case STATE_PENDING:
-			add_to_pkt_list(pkt_list, ippkt, iphdr->tot_len);
+			add_to_pkt_list(pkt_list, ippkt, ntohs(iphdr->tot_len));
 			break;
 		case STATE_ESTABLISHED:
 			build_cpkt(pkt_list, sflow, ippkt);
@@ -616,7 +625,8 @@ void xmit_compress(void *ippkt, struct list *pkt_list)
 	return;
 
 can_not_compact:
-	add_to_pkt_list(pkt_list, ippkt, iphdr->tot_len);
+	add_to_pkt_list(pkt_list, ippkt, ntohs(iphdr->tot_len));
+	return;
 }
 
 // return 0 on success

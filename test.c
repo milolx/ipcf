@@ -39,16 +39,20 @@ extern void compact_init();
 
 #define MAX_BUF_SIZE	2000
 
-static u32 tot = 1;
-static u32 full_ip = 1;
-static u32 compact_ip = 0;
-static u32 payload = 0;
+static u32 tot_s = 1;
+static u32 tot_r = 1;
+static u32 full_ip_r = 1;	// full ip recv from tun dev
+static u32 full_ip_s = 1;	// full ip submit to tun dev
+static u32 compact_ip_s = 0;	// compact pkt + ctrl pkt, not including other
+				// connection's ack
+static u32 compact_ip_r = 0;	// compact pkt received
+static u32 payload_r = 0;	// udp payload from tun dev (regard as udp)
 
 static void *recv_tun(void *arg)
 {
 	char buf[MAX_BUF_SIZE];
 	int n, n2;
-	pkt_t *pkt;
+	pkt_t *pkt, *nxt;
 	struct list pkt_list;
 
 	while (1) {
@@ -58,17 +62,21 @@ static void *recv_tun(void *arg)
 			continue;
 		}
 
-		full_ip += n;
-		payload += n - 28;	// iphdr(20), udphdr(8)
+		full_ip_r += n;
+		payload_r += n - 28;	// iphdr(20), udphdr(8)
 		//<<<<<<<<<< IP
 
 		xmit_compress(buf, &pkt_list);
 		//>>>>>>>>>> compacted IP
-		LIST_FOR_EACH(pkt, node, &pkt_list) {
+		LIST_FOR_EACH_SAFE(pkt, nxt, node, &pkt_list) {
+			compact_ip_s += pkt->len;
+
 			n2 = upper_send(2, 1, pkt->data, pkt->len);
-			compact_ip += pkt->len;
 			if (n2 != n)
 				printf("upper_send error, ret=%d\n", n2);
+
+			list_remove(&pkt->node);
+			free(pkt);
 		}
 	}
 
@@ -89,7 +97,7 @@ static void *recv_split(void *arg)
 		}
 
 		udp_send((char *)buf, n2);
-		tot += n2;
+		tot_s += n2;
 	}
 
 	return NULL;
@@ -106,6 +114,7 @@ static void *recv_udp(void *arg)
 			printf("udp_recv, n=%d\n", n);
 			continue;
 		}
+		tot_r += n;
 		//<<<<<<<<<< splited & packed data frame
 
 		lower_put(buf, n);
@@ -127,14 +136,23 @@ static void *recv_unsplit(void *arg)
 			usleep(500);
 			continue;
 		}
+		compact_ip_r += n2;
 		//<<<<<<<<<< compacted ip
 
 		recv_compress(buf, n, &ippkt, &send_back_pkt);
-		if (ippkt)
+		if (ippkt) {
 			tun_write((char *)ippkt->data, ippkt->len);
-		if (send_back_pkt)
-			udp_send((char *)send_back_pkt->data,
-					send_back_pkt->len);
+			full_ip_s += ippkt->len;
+
+			free(ippkt);
+		}
+		if (send_back_pkt) {
+			n2 = upper_send(2, 1, send_back_pkt->data, send_back_pkt->len);
+			if (n2 != send_back_pkt->len)
+				printf("upper_sendback error, ret=%d\n", n2);
+
+			free(send_back_pkt);
+		}
 	}
 
 	return NULL;
@@ -160,15 +178,19 @@ int main()
 
 		proc_timer();
 
-		printf("effective payload = %d\n", payload);
-		printf("compact ip tot = %d\n", compact_ip);
-		printf("full ip tot = %d\n", full_ip);
-		printf("everything(including re-transmition), tot = %d\n", tot);
-		printf("data ratio(payload/tot) = %f\n",(float)(payload/tot));
+		printf("effective payload = %d\n", payload_r);
+		printf("compact ip sent = %d\n", compact_ip_s);
+		printf("compact ip recv = %d\n", compact_ip_r);
+		printf("full ip recv = %d\n", full_ip_r);
+		printf("full ip submit = %d\n", full_ip_s);
+		printf("everything send to channel = %d\n", tot_s);
+		printf("everything recv from channel = %d\n", tot_r);
+		printf("eff ratio(payload/tot) = %f\n",
+				(float)payload_r / tot_s);
 		printf("compact ratio(cip/fip) = %f\n",
-				(float)(compact_ip/full_ip));
+				(float)compact_ip_s / full_ip_r);
 		printf("split ratio(cip/tot) = %f\n",
-				(float)(compact_ip/tot));
+				(float)compact_ip_s / tot_s);
 		printf("-----\n\n");
 	}
 
