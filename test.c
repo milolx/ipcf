@@ -21,7 +21,7 @@ static void *recv_tun(void *arg)
 {
 	char buf[MAX_BUF_SIZE];
 	int n;
-	pkt_t *pkt;
+	pkt_t *pkt, *nxt;
 	struct list pkt_list;
 
 	while (1) {
@@ -31,8 +31,11 @@ static void *recv_tun(void *arg)
 			continue;
 		}
 		xmit_compress(buf, &pkt_list);
-		LIST_FOR_EACH(pkt, node, &pkt_list)
+		LIST_FOR_EACH_SAFE(pkt, nxt, node, &pkt_list) {
 			udp_send((char *)pkt->data, pkt->len);
+			list_remove(&pkt->node);
+			free(pkt);
+		}
 	}
 
 	return NULL;
@@ -51,10 +54,14 @@ static void *recv_udp(void *arg)
 			continue;
 		}
 		recv_compress(buf, n, &ippkt, &send_back_pkt);
-		if (ippkt)
+		if (ippkt) {
 			tun_write((char *)ippkt->data, ippkt->len);
-		if (send_back_pkt)
+			free(ippkt);
+		}
+		if (send_back_pkt) {
 			udp_send((char *)send_back_pkt->data, send_back_pkt->len);
+			free(send_back_pkt);
+		}
 	}
 
 	return NULL;
