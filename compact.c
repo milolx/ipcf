@@ -74,8 +74,8 @@ static skey_t get_sflow_key(void *ippkt)
 	k.saddr = iphdr->saddr;
 	k.daddr = iphdr->daddr;
 	k.proto = iphdr->protocol;
-	if ((iphdr->frag_off & FRAG_FLAG_MF_MASK)
-			|| (iphdr->frag_off & FRAG_OFF_MASK)
+	if ((ntohs(iphdr->frag_off) & FRAG_FLAG_MF_MASK)
+			|| (ntohs(iphdr->frag_off) & FRAG_OFF_MASK)
 			|| ((iphdr->protocol != PROTOCOL_TCP)
 				&& (iphdr->protocol != PROTOCOL_UDP))) {
 		k.sport = 0;
@@ -194,14 +194,15 @@ static void build_cpkt(struct list *pkt_list, sflow_node_t *sflow, void *ippkt)
 	if (sflow->skey.ipid) {
 		chdr->t = CTYPE_FRM_RAW;
 
-		if (iphdr->frag_off & FRAG_FLAG_MF_MASK)
+		if (ntohs(iphdr->frag_off) & FRAG_FLAG_MF_MASK)
 			chdr->i |= CTYPE_RAW_MFBIT;
-		if (iphdr->frag_off & FRAG_OFF_MASK) {
+		if (ntohs(iphdr->frag_off) & FRAG_OFF_MASK) {
 			u16 frag_off;
 
 			chdr->i |= CTYPE_RAW_FBIT;
 
-			frag_off = iphdr->frag_off & FRAG_OFF_MASK;
+			frag_off = ntohs(iphdr->frag_off) & FRAG_OFF_MASK;
+			frag_off = htons(frag_off);
 			memcpy(pkt->data + pkt->len, &frag_off, sizeof frag_off);
 			pkt->len += sizeof frag_off;
 		}
@@ -506,11 +507,15 @@ static pkt_t* recv_raw(void *cpkt, u16 len, rflow_node_t *rflow)
 	iphdr->frag_off = 0;
 	if (chdr->i & CTYPE_RAW_FBIT) {
 		memcpy(&iphdr->frag_off, cpkt + offset, sizeof iphdr->frag_off);
+		iphdr->frag_off = ntohs(iphdr->frag_off);
 		iphdr->frag_off &= FRAG_OFF_MASK;
+		iphdr->frag_off = htons(iphdr->frag_off);
 		offset += sizeof iphdr->frag_off;
 	}
 	if (chdr->i & CTYPE_RAW_MFBIT) {
+		iphdr->frag_off = ntohs(iphdr->frag_off);
 		iphdr->frag_off |= FRAG_FLAG_MF_MASK;
+		iphdr->frag_off = htons(iphdr->frag_off);
 	}
 
 	memcpy(pkt->data + sizeof *iphdr, cpkt + offset, len - offset);
@@ -574,7 +579,7 @@ void xmit_compress(void *ippkt, struct list *pkt_list)
 		// not ipv4 or has ip options
 		goto can_not_compact;
 	}
-	if (!csum(iphdr, sizeof *iphdr)) {
+	if (csum(iphdr, sizeof *iphdr)) {
 		// checksum error or even not a ip pkt
 		goto can_not_compact;
 	}
