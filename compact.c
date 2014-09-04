@@ -145,7 +145,7 @@ static void add_to_pkt_list(struct list *pkt_list, void *data, u16 len)
 
 	pkt = xmalloc(sizeof *pkt);
 	pkt->len = len;
-	//memcpy(pkt->data, data, len);
+	memcpy(pkt->data, data, len);
 	list_push_back(pkt_list, &pkt->node);
 }
 
