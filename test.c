@@ -72,8 +72,8 @@ static void *recv_tun(void *arg)
 			compact_ip_s += pkt->len;
 
 			n2 = upper_send(2, 1, pkt->data, pkt->len);
-			if (n2 != n)
-				printf("upper_send error, ret=%d\n", n2);
+			if (n2 != pkt->len)
+				printf("upper_send error, ret=%d, len=%d\n", n2, pkt->len);
 
 			list_remove(&pkt->node);
 			free(pkt);
