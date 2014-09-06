@@ -1252,6 +1252,7 @@ int upper_send(u8 smac, u8 dmac, void *msg, int msglen)
 	if (!se)
 		se = create_sse(&key);
 
+#if 0
 	_lock(&se->lock);
 	empty = list_is_empty(&se->pkt_list);
 	_unlock(&se->lock);
@@ -1259,6 +1260,7 @@ int upper_send(u8 smac, u8 dmac, void *msg, int msglen)
 		ret = -2;
 		goto err_out;
 	}
+#endif
 
 	// FIXME: normally, dmac in the first place
 	fh->src = smac;
