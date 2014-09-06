@@ -132,11 +132,13 @@ static void *recv_unsplit(void *arg)
 	while (1) {
 		n = MAX_BUF_SIZE;
 		n2 = upper_recv(buf, &n);
-		if (n2 <= 0) {
+		if (n2 > 0)
+			printf("upper_recv: drop %d byte(s)\n", n2);
+		if (!n) {
 			usleep(500);
 			continue;
 		}
-		compact_ip_r += n2;
+		compact_ip_r += n;
 		//<<<<<<<<<< compacted ip
 
 		recv_compress(buf, n, &ippkt, &send_back_pkt);
