@@ -86,18 +86,18 @@ static void *recv_tun(void *arg)
 static void *recv_split(void *arg)
 {
 	u8 buf[MAX_BUF_SIZE];
-	int n, n2;
+	int n;
 
 	while (1) {
 		n = MAX_BUF_SIZE;
-		n2 = lower_fetch(buf, &n);
-		if (n2 <= 0) {
+		lower_fetch(buf, &n);
+		if (n <= 0) {
 			usleep(500);
 			continue;
 		}
 
-		udp_send((char *)buf, n2);
-		tot_s += n2;
+		udp_send((char *)buf, n);
+		tot_s += n;
 	}
 
 	return NULL;
