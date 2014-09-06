@@ -15,8 +15,8 @@
 #define SLICE_DATA_LEN	32
 //#define SLICE_DATA_LEN	950
 #define IDLE_TIMEOUT	(10 * 1000)	// in ms
-//#define ACK_TIMEOUT	(3 * 1000)	// in ms
-#define ACK_TIMEOUT	(0)		// 0 for debug
+#define ACK_TIMEOUT	(3 * 1000)	// in ms
+//#define ACK_TIMEOUT	(0)		// 0 for debug
 #define MAX_RETRY_TIMES	5
 
 #define FRM_MSG_HDR_LEN	(sizeof(frm_hdr_t) + sizeof(msg_hdr_t))
