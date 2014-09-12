@@ -10,6 +10,7 @@
 #include "ts.h"
 #include "hash.h"
 #include "csum.h"
+#include "atomic.h"
 
 typedef struct {
 	struct hmap_node node;
@@ -41,6 +42,9 @@ typedef struct {
 static struct hmap sflow_hmap;
 static struct hmap rflow_hmap;
 //static struct hmap frag_hmap;
+
+light_lock_t sflow_lock;
+light_lock_t rflow_lock;
 
 idpool_t *idp;
 static sflow_node_t* sflow_rindex[1<<N_ID_BITS];
@@ -103,10 +107,14 @@ static sflow_node_t* get_sflow_by_hash(u32 hval, skey_t *skey)
 {
 	sflow_node_t *n;
 
+	_lock(&sflow_lock);
 	HMAP_FOR_EACH_WITH_HASH(n, node, hval, &sflow_hmap) {
-		if (!memcmp(&n->skey, skey, sizeof *skey))
+		if (!memcmp(&n->skey, skey, sizeof *skey)) {
+			_unlock(&sflow_lock);
 			return n;
+		}
 	}
+	_unlock(&sflow_lock);
 	return NULL;
 }
 
@@ -129,7 +137,9 @@ static sflow_node_t* build_sflow_by_hash(u32 hval, skey_t *skey, void *ippkt, u8
 
 	n->fid = fid;
 	n->soft_timeout = ts_msec() + SOFT_TIMEOUT_INTERVAL;
+	_lock(&sflow_lock);
 	hmap_insert(&sflow_hmap, &n->node, hval);
+	_unlock(&sflow_lock);
 
 	return n;
 }
@@ -292,10 +302,14 @@ static rflow_node_t* get_rflow_by_hash(u32 hval, rkey_t *rkey)
 {
 	rflow_node_t *n;
 
+	_lock(&rflow_lock);
 	HMAP_FOR_EACH_WITH_HASH(n, node, hval, &rflow_hmap) {
-		if (!memcmp(&n->rkey, rkey, sizeof *rkey))
+		if (!memcmp(&n->rkey, rkey, sizeof *rkey)) {
+			_unlock(&rflow_lock);
 			return n;
+		}
 	}
+	_unlock(&rflow_lock);
 	return NULL;
 }
 
@@ -351,7 +365,9 @@ static rflow_node_t* build_rflow_by_hash(uint32_t hval, rkey_t *rkey, void *cpkt
 	}
 	n->fid = chdr->id;
 	n->soft_timeout = ts_msec() + SOFT_TIMEOUT_INTERVAL;
+	_lock(&rflow_lock);
 	hmap_insert(&rflow_hmap, &n->node, hval);
+	_unlock(&rflow_lock);
 
 	return n;
 }
@@ -534,6 +550,7 @@ void timer_event()
 	rflow_node_t *r, *rn;
 	long long int now = ts_msec();
 
+	_lock(&sflow_lock);
 	HMAP_FOR_EACH_SAFE(s, sn, node, &sflow_hmap) {
 		if (now < s->soft_timeout)
 			continue;
@@ -559,7 +576,9 @@ void timer_event()
 		}
 		*/
 	}
+	_unlock(&sflow_lock);
 
+	_lock(&rflow_lock);
 	HMAP_FOR_EACH_SAFE(r, rn, node, &rflow_hmap) {
 		if (now < r->soft_timeout)
 			continue;
@@ -567,12 +586,16 @@ void timer_event()
 		hmap_remove(&rflow_hmap, &r->node);
 		free(r);
 	}
+	_unlock(&rflow_lock);
 }
 
 void compact_init()
 {
 	hmap_init(&sflow_hmap);
 	hmap_init(&rflow_hmap);
+
+	_lock_init(&sflow_lock);
+	_lock_init(&rflow_lock);
 
 	idp = init_idpool(1<<N_ID_BITS);
 }
