@@ -1202,6 +1202,8 @@ void proc_timer(void)
 				free(pkt);
 			}
 			free(se);
+
+			sse[i] = NULL;
 		}
 	}
 	_unlock(&sse_lock);
@@ -1215,6 +1217,8 @@ void proc_timer(void)
 
 			_lock_destroy(&se->lock);
 			free(se);
+
+			rse[i] = NULL;
 		}
 	}
 	_unlock(&rse_lock);
