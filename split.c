@@ -1351,7 +1351,7 @@ int upper_recv(u8 *buf, int *len)
 		*len = r->len <= *len ? r->len:*len;
 		memcpy(buf, r->data, *len);
 		ret = r->len - *len;
-		free(node);
+		free(r);
 	}
 	else {
 		_unlock(&upper_recv_lock);
@@ -1393,7 +1393,7 @@ int lower_fetch(u8 *buf, int *len)
 			*len = 0;
 			ret = -1;
 		}
-		free(node);
+		free(s);
 	}
 	else {
 		_unlock(&lower_send_lock);
