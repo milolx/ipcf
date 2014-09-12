@@ -530,15 +530,19 @@ static pkt_t* recv_raw(void *cpkt, u16 len, rflow_node_t *rflow)
 
 void timer_event()
 {
-	sflow_node_t *flow;
+	sflow_node_t *s, *sn;
+	rflow_node_t *r, *rn;
 	long long int now = ts_msec();
 
-	HMAP_FOR_EACH(flow, node, &sflow_hmap) {
-		if (now < flow->soft_timeout)
+	HMAP_FOR_EACH_SAFE(s, sn, node, &sflow_hmap) {
+		if (now < s->soft_timeout)
 			continue;
 
-		/*
+		hmap_remove(&sflow_hmap, &s->node);
+		sflow_rindex[s->fid] = NULL;
+		free(s);
 		// timeout
+		/*
 		switch (flow->state) {
 			case STATE_NEW:
 				break;
@@ -554,6 +558,14 @@ void timer_event()
 				break;
 		}
 		*/
+	}
+
+	HMAP_FOR_EACH_SAFE(r, rn, node, &rflow_hmap) {
+		if (now < r->soft_timeout)
+			continue;
+
+		hmap_remove(&rflow_hmap, &r->node);
+		free(r);
 	}
 }
 
@@ -667,7 +679,10 @@ int recv_compress(void *cpkt, int len, pkt_t **ippkt, pkt_t **send_back_pkt)
 					*send_back_pkt = build_ack(cpkt);
 					break;
 				case CTYPE_CTL_ACK:
-					sflow_rindex[chdr->id]->state = STATE_ESTABLISHED;
+					if (sflow_rindex[chdr->id])
+						sflow_rindex[chdr->id]->state = STATE_ESTABLISHED;
+					else
+						printf("sflow_rindex[%d] is null\n", chdr->id);
 					break;
 				case CTYPE_CTL_FLT:
 					break;

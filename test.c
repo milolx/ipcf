@@ -14,6 +14,7 @@ extern void xmit_compress(void *ippkt, struct list *pkt_list);
 extern int recv_compress(void *cpkt, int len, pkt_t **ippkt,
 		pkt_t **send_back_pkt);
 extern void compact_init();
+extern void timer_event();
 
 #define MAX_BUF_SIZE	2000
 
@@ -88,6 +89,7 @@ int main()
 
 	while (1) {
 		sleep(1);
+		timer_event();
 
 		printf("compact ratio(cip/fip) = (%d/%d) = %f\n",
 				compact_ip, full_ip,
