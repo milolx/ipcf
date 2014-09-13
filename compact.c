@@ -628,9 +628,16 @@ void xmit_compress(void *ippkt, struct list *pkt_list)
 	sflow = get_sflow_by_hash(hval, &skey);
 
 	if (!sflow) {	// new flow
+		int tmp;
 		u8 fid;
 
-		fid = get_id(idp);
+		tmp = get_id(idp);
+		if (tmp < 0) {
+			printf("err: get_id = %d\n", tmp);
+			goto err_out;
+		}
+		else
+			fid = (u8) tmp;
 		// reverse-locate flow entry also via fid
 
 		sflow = build_sflow_by_hash(hval, &skey, ippkt, fid);
@@ -661,6 +668,7 @@ void xmit_compress(void *ippkt, struct list *pkt_list)
 
 can_not_compact:
 	add_to_pkt_list(pkt_list, ippkt, ntohs(iphdr->tot_len));
+err_out:
 	return;
 }
 
