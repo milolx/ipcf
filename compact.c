@@ -557,6 +557,7 @@ void timer_event()
 
 		hmap_remove(&sflow_hmap, &s->node);
 		sflow_rindex[s->fid] = NULL;
+		release_id(idp, s->fid);
 		free(s);
 		// timeout
 		/*
