@@ -390,13 +390,14 @@ static pkt_t* recv_tcp(void *cpkt, u16 len, rflow_node_t *rflow)
 	struct tcphdr *tcphdr;
 	int offset;
 
-	rflow->hdr.ip.id ++;	// make it diff... in fact, any num is fine
+	// make it diff... in fact, any num is fine
+	rflow->hdr.ip.id = htons(ntohs(rflow->hdr.ip.id) + 1);
 
 	pkt = xmalloc(sizeof *pkt);
 	iphdr = (struct iphdr *)pkt->data;
 	memcpy(iphdr, &rflow->hdr.ip, sizeof *iphdr);
 	tcphdr = (struct tcphdr *)(pkt->data + sizeof *iphdr);
-	memcpy(tcphdr, &rflow->hdr.ip, sizeof *tcphdr);
+	memcpy(tcphdr, &rflow->hdr.t, sizeof *tcphdr);
 
 	pkt->len = sizeof *iphdr + sizeof *tcphdr;
 
@@ -476,13 +477,14 @@ static pkt_t* recv_udp(void *cpkt, u16 len, rflow_node_t *rflow)
 	struct udphdr *udphdr;
 	int offset;
 
-	rflow->hdr.ip.id ++;	// make it diff... in fact, any num is fine
+	// make it diff... in fact, any num is fine
+	rflow->hdr.ip.id = htons(ntohs(rflow->hdr.ip.id) + 1);
 
 	pkt = xmalloc(sizeof *pkt);
 	iphdr = (struct iphdr *)pkt->data;
 	memcpy(iphdr, &rflow->hdr.ip, sizeof *iphdr);
 	udphdr = (struct udphdr *)(pkt->data + sizeof *iphdr);
-	memcpy(udphdr, &rflow->hdr.ip, sizeof *udphdr);
+	memcpy(udphdr, &rflow->hdr.t, sizeof *udphdr);
 
 	pkt->len = sizeof *iphdr + sizeof *udphdr;
 
