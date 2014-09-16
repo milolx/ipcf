@@ -404,33 +404,33 @@ static pkt_t* recv_tcp(void *cpkt, u16 len, rflow_node_t *rflow)
 
 	if (chdr->i & CTYPE_TCP_SBIT) {
 		memcpy(&tcphdr->seq, cpkt + offset, sizeof tcphdr->seq);
-		offset += tcphdr->seq;
+		offset += sizeof tcphdr->seq;
 	}
 
 	if (chdr->i & CTYPE_TCP_ABIT) {
 		tcphdr->ack = 1;
 		memcpy(&tcphdr->ack_seq, cpkt + offset, sizeof tcphdr->ack_seq);
-		offset += tcphdr->ack_seq;
+		offset += sizeof tcphdr->ack_seq;
 	}
 	else
 		tcphdr->ack = 0;
 
 	if (chdr->i & CTYPE_TCP_WBIT) {
 		memcpy(&tcphdr->window, cpkt + offset, sizeof tcphdr->window);
-		offset += tcphdr->window;
+		offset += sizeof tcphdr->window;
 	}
 
 	if (!(chdr->i & CTYPE_TCP_SBMASK)
 			|| ((chdr->i & CTYPE_TCP_SBMASK) >= CTYPE_TCP_URGSYN)) {
 		tcphdr->urg = 1;
 		memcpy(&tcphdr->urg_ptr, cpkt + offset, sizeof tcphdr->urg_ptr);
-		offset += tcphdr->urg_ptr;
+		offset += sizeof tcphdr->urg_ptr;
 	}
 	else
 		tcphdr->urg = 0;
 
 	memcpy(&tcphdr->check, cpkt + offset, sizeof tcphdr->check);
-	offset += tcphdr->check;
+	offset += sizeof tcphdr->check;
 
 	memcpy(pkt->data + sizeof *iphdr + sizeof *tcphdr,
 			cpkt + offset,
