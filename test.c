@@ -18,8 +18,10 @@ extern void timer_event();
 
 #define MAX_BUF_SIZE	2000
 
-static u32 full_ip = 1;
-static u32 compact_ip = 0;	// compact pkt + ctrl pkt
+static u32 full_ip_s = 1;
+static u32 compact_ip_s = 0;	// compact pkt + ctrl pkt
+static u32 full_ip_r = 1;
+static u32 compact_ip_r = 0;	// compact pkt + ctrl pkt
 
 static void *recv_tun(void *arg)
 {
@@ -34,12 +36,12 @@ static void *recv_tun(void *arg)
 			printf("turn_read err, n=%d\n", n);
 			continue;
 		}
-		full_ip += n;
+		full_ip_s += n;
 
 		xmit_compress(buf, &pkt_list);
 		LIST_FOR_EACH_SAFE(pkt, nxt, node, &pkt_list) {
 			udp_send((char *)pkt->data, pkt->len);
-			compact_ip += pkt->len;
+			compact_ip_s += pkt->len;
 			list_remove(&pkt->node);
 			free(pkt);
 		}
@@ -60,13 +62,16 @@ static void *recv_udp(void *arg)
 			printf("udp_recv, n=%d\n", n);
 			continue;
 		}
+		compact_ip_r += n;
 
 		recv_compress(buf, n, &ippkt, &send_back_pkt);
 		if (ippkt) {
+			full_ip_r += ippkt->len;
 			tun_write((char *)ippkt->data, ippkt->len);
 			free(ippkt);
 		}
 		if (send_back_pkt) {
+			compact_ip_r += send_back_pkt->len;
 			udp_send((char *)send_back_pkt->data, send_back_pkt->len);
 			free(send_back_pkt);
 		}
@@ -92,8 +97,8 @@ int main()
 		timer_event();
 
 		printf("compact ratio(cip/fip) = (%d/%d) = %f\n",
-				compact_ip, full_ip,
-				(float)compact_ip / full_ip);
+				compact_ip_s+compact_ip_r, full_ip_s+full_ip_r,
+				(float) (compact_ip_s+compact_ip_r)/(full_ip_s+full_ip_r));
 	}
 
 	return 0;
