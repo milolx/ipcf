@@ -144,7 +144,12 @@ static sflow_node_t* build_sflow_by_hash(u32 hval, skey_t *skey, void *ippkt, u8
 	return n;
 }
 
-static void touch_flow(sflow_node_t* flow)
+static void touch_sflow(sflow_node_t* flow)
+{
+	flow->soft_timeout = ts_msec() + SOFT_TIMEOUT_INTERVAL;
+}
+
+static void touch_rflow(rflow_node_t* flow)
 {
 	flow->soft_timeout = ts_msec() + SOFT_TIMEOUT_INTERVAL;
 }
@@ -669,7 +674,7 @@ void xmit_compress(void *ippkt, struct list *pkt_list)
 			break;
 	}
 
-	touch_flow(sflow);
+	touch_sflow(sflow);
 	return;
 
 can_not_compact:
@@ -703,16 +708,13 @@ int recv_compress(void *cpkt, int len, pkt_t **ippkt, pkt_t **send_back_pkt)
 	hval = hash_bytes(&rkey, sizeof rkey);
 	rflow = get_rflow_by_hash(hval, &rkey);
 
-	if (!rflow) {	// new flow
-		rflow = build_rflow_by_hash(hval, &rkey, cpkt);
-	}
-
-	assert(rflow);
-
 	switch (chdr->t) {
 		case CTYPE_FRM_CTL:
 			switch (chdr->i) {
 				case CTYPE_CTL_REQ:
+					assert(!rflow);
+					rflow = build_rflow_by_hash(hval, &rkey, cpkt);
+
 					*send_back_pkt = build_ack(cpkt);
 					break;
 				case CTYPE_CTL_ACK:
@@ -729,16 +731,22 @@ int recv_compress(void *cpkt, int len, pkt_t **ippkt, pkt_t **send_back_pkt)
 			}
 			break;
 		case CTYPE_FRM_TCP:
+			assert(rflow);
+			touch_rflow(rflow);
 			*ippkt = recv_tcp(cpkt, len, rflow);
 			break;
 		case CTYPE_FRM_UDP:
+			assert(rflow);
+			touch_rflow(rflow);
 			*ippkt = recv_udp(cpkt, len, rflow);
 			break;
 		case CTYPE_FRM_RAW:
+			assert(rflow);
+			touch_rflow(rflow);
 			*ippkt = recv_raw(cpkt, len, rflow);
 			break;
 		default:
-			assert(1);
+			assert(0);
 	}
 
 	return 0;
