@@ -527,6 +527,7 @@ static void send_ack(u8 dst, u8 src, rse_t *se)
 		fh->type = FRAME_TYPE_ACKA;
 	else
 		fh->type = FRAME_TYPE_ACKP;
+	fh->reserved = 0;
 
 	mh->seq = se->seq_exp;
 	mh->len = 0;
@@ -912,6 +913,7 @@ static void send_patch(send_node_t *snode, u8 *data, u16 len)
 	tmpfh->src = fh->src;
 	tmpfh->dst = fh->dst;
 	tmpfh->type = FRAME_TYPE_PATCH;
+	tmpfh->reserved = 0;
 	tmpmh->seq = mh->seq;
 	tmpmh->len = 0;
 	tmpmh->d_csum = 0xffffffff;
