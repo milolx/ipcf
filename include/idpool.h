@@ -6,6 +6,7 @@ typedef struct {
 	int *pool;
 	int head;
 	int tail;
+	bool empty;
 }idpool_t;
 
 idpool_t *init_idpool(int n);

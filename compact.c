@@ -10,6 +10,7 @@
 #include "ts.h"
 #include "hash.h"
 #include "csum.h"
+#include "atomic.h"
 
 typedef struct {
 	struct hmap_node node;
@@ -41,6 +42,9 @@ typedef struct {
 static struct hmap sflow_hmap;
 static struct hmap rflow_hmap;
 //static struct hmap frag_hmap;
+
+light_lock_t sflow_lock;
+light_lock_t rflow_lock;
 
 idpool_t *idp;
 static sflow_node_t* sflow_rindex[1<<N_ID_BITS];
@@ -103,10 +107,14 @@ static sflow_node_t* get_sflow_by_hash(u32 hval, skey_t *skey)
 {
 	sflow_node_t *n;
 
+	_lock(&sflow_lock);
 	HMAP_FOR_EACH_WITH_HASH(n, node, hval, &sflow_hmap) {
-		if (!memcmp(&n->skey, skey, sizeof *skey))
+		if (!memcmp(&n->skey, skey, sizeof *skey)) {
+			_unlock(&sflow_lock);
 			return n;
+		}
 	}
+	_unlock(&sflow_lock);
 	return NULL;
 }
 
@@ -129,12 +137,19 @@ static sflow_node_t* build_sflow_by_hash(u32 hval, skey_t *skey, void *ippkt, u8
 
 	n->fid = fid;
 	n->soft_timeout = ts_msec() + SOFT_TIMEOUT_INTERVAL;
+	_lock(&sflow_lock);
 	hmap_insert(&sflow_hmap, &n->node, hval);
+	_unlock(&sflow_lock);
 
 	return n;
 }
 
-static void touch_flow(sflow_node_t* flow)
+static void touch_sflow(sflow_node_t* flow)
+{
+	flow->soft_timeout = ts_msec() + SOFT_TIMEOUT_INTERVAL;
+}
+
+static void touch_rflow(rflow_node_t* flow)
 {
 	flow->soft_timeout = ts_msec() + SOFT_TIMEOUT_INTERVAL;
 }
@@ -292,10 +307,14 @@ static rflow_node_t* get_rflow_by_hash(u32 hval, rkey_t *rkey)
 {
 	rflow_node_t *n;
 
+	_lock(&rflow_lock);
 	HMAP_FOR_EACH_WITH_HASH(n, node, hval, &rflow_hmap) {
-		if (!memcmp(&n->rkey, rkey, sizeof *rkey))
+		if (!memcmp(&n->rkey, rkey, sizeof *rkey)) {
+			_unlock(&rflow_lock);
 			return n;
+		}
 	}
+	_unlock(&rflow_lock);
 	return NULL;
 }
 
@@ -351,7 +370,9 @@ static rflow_node_t* build_rflow_by_hash(uint32_t hval, rkey_t *rkey, void *cpkt
 	}
 	n->fid = chdr->id;
 	n->soft_timeout = ts_msec() + SOFT_TIMEOUT_INTERVAL;
+	_lock(&rflow_lock);
 	hmap_insert(&rflow_hmap, &n->node, hval);
+	_unlock(&rflow_lock);
 
 	return n;
 }
@@ -374,13 +395,14 @@ static pkt_t* recv_tcp(void *cpkt, u16 len, rflow_node_t *rflow)
 	struct tcphdr *tcphdr;
 	int offset;
 
-	rflow->hdr.ip.id ++;	// make it diff... in fact, any num is fine
+	// make it diff... in fact, any num is fine
+	rflow->hdr.ip.id = htons(ntohs(rflow->hdr.ip.id) + 1);
 
 	pkt = xmalloc(sizeof *pkt);
 	iphdr = (struct iphdr *)pkt->data;
 	memcpy(iphdr, &rflow->hdr.ip, sizeof *iphdr);
 	tcphdr = (struct tcphdr *)(pkt->data + sizeof *iphdr);
-	memcpy(tcphdr, &rflow->hdr.ip, sizeof *tcphdr);
+	memcpy(tcphdr, &rflow->hdr.t, sizeof *tcphdr);
 
 	pkt->len = sizeof *iphdr + sizeof *tcphdr;
 
@@ -388,33 +410,33 @@ static pkt_t* recv_tcp(void *cpkt, u16 len, rflow_node_t *rflow)
 
 	if (chdr->i & CTYPE_TCP_SBIT) {
 		memcpy(&tcphdr->seq, cpkt + offset, sizeof tcphdr->seq);
-		offset += tcphdr->seq;
+		offset += sizeof tcphdr->seq;
 	}
 
 	if (chdr->i & CTYPE_TCP_ABIT) {
 		tcphdr->ack = 1;
 		memcpy(&tcphdr->ack_seq, cpkt + offset, sizeof tcphdr->ack_seq);
-		offset += tcphdr->ack_seq;
+		offset += sizeof tcphdr->ack_seq;
 	}
 	else
 		tcphdr->ack = 0;
 
 	if (chdr->i & CTYPE_TCP_WBIT) {
 		memcpy(&tcphdr->window, cpkt + offset, sizeof tcphdr->window);
-		offset += tcphdr->window;
+		offset += sizeof tcphdr->window;
 	}
 
 	if (!(chdr->i & CTYPE_TCP_SBMASK)
 			|| ((chdr->i & CTYPE_TCP_SBMASK) >= CTYPE_TCP_URGSYN)) {
 		tcphdr->urg = 1;
 		memcpy(&tcphdr->urg_ptr, cpkt + offset, sizeof tcphdr->urg_ptr);
-		offset += tcphdr->urg_ptr;
+		offset += sizeof tcphdr->urg_ptr;
 	}
 	else
 		tcphdr->urg = 0;
 
 	memcpy(&tcphdr->check, cpkt + offset, sizeof tcphdr->check);
-	offset += tcphdr->check;
+	offset += sizeof tcphdr->check;
 
 	memcpy(pkt->data + sizeof *iphdr + sizeof *tcphdr,
 			cpkt + offset,
@@ -460,13 +482,14 @@ static pkt_t* recv_udp(void *cpkt, u16 len, rflow_node_t *rflow)
 	struct udphdr *udphdr;
 	int offset;
 
-	rflow->hdr.ip.id ++;	// make it diff... in fact, any num is fine
+	// make it diff... in fact, any num is fine
+	rflow->hdr.ip.id = htons(ntohs(rflow->hdr.ip.id) + 1);
 
 	pkt = xmalloc(sizeof *pkt);
 	iphdr = (struct iphdr *)pkt->data;
 	memcpy(iphdr, &rflow->hdr.ip, sizeof *iphdr);
 	udphdr = (struct udphdr *)(pkt->data + sizeof *iphdr);
-	memcpy(udphdr, &rflow->hdr.ip, sizeof *udphdr);
+	memcpy(udphdr, &rflow->hdr.t, sizeof *udphdr);
 
 	pkt->len = sizeof *iphdr + sizeof *udphdr;
 
@@ -474,6 +497,8 @@ static pkt_t* recv_udp(void *cpkt, u16 len, rflow_node_t *rflow)
 
 	memcpy(&udphdr->check, cpkt + offset, sizeof udphdr->check);
 	offset += sizeof udphdr->check;
+
+	udphdr->len = htons(len - offset + sizeof *udphdr);
 
 	memcpy(pkt->data + sizeof *iphdr + sizeof *udphdr,
 			cpkt + offset,
@@ -530,15 +555,21 @@ static pkt_t* recv_raw(void *cpkt, u16 len, rflow_node_t *rflow)
 
 void timer_event()
 {
-	sflow_node_t *flow;
+	sflow_node_t *s, *sn;
+	rflow_node_t *r, *rn;
 	long long int now = ts_msec();
 
-	HMAP_FOR_EACH(flow, node, &sflow_hmap) {
-		if (now < flow->soft_timeout)
+	_lock(&sflow_lock);
+	HMAP_FOR_EACH_SAFE(s, sn, node, &sflow_hmap) {
+		if (now < s->soft_timeout)
 			continue;
 
-		/*
+		hmap_remove(&sflow_hmap, &s->node);
+		sflow_rindex[s->fid] = NULL;
+		release_id(idp, s->fid);
+		free(s);
 		// timeout
+		/*
 		switch (flow->state) {
 			case STATE_NEW:
 				break;
@@ -555,6 +586,17 @@ void timer_event()
 		}
 		*/
 	}
+	_unlock(&sflow_lock);
+
+	_lock(&rflow_lock);
+	HMAP_FOR_EACH_SAFE(r, rn, node, &rflow_hmap) {
+		if (now < r->soft_timeout)
+			continue;
+
+		hmap_remove(&rflow_hmap, &r->node);
+		free(r);
+	}
+	_unlock(&rflow_lock);
 }
 
 void compact_init()
@@ -562,12 +604,16 @@ void compact_init()
 	hmap_init(&sflow_hmap);
 	hmap_init(&rflow_hmap);
 
+	_lock_init(&sflow_lock);
+	_lock_init(&rflow_lock);
+
 	idp = init_idpool(1<<N_ID_BITS);
 }
 
 void xmit_compress(void *ippkt, struct list *pkt_list)
 {
 	struct iphdr *iphdr = (struct iphdr *)ippkt;
+	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof *iphdr);
 
 	skey_t skey;
 	u32 hval;
@@ -575,8 +621,10 @@ void xmit_compress(void *ippkt, struct list *pkt_list)
 
 	list_init(pkt_list);
 
-	if (iphdr->version != 4 || iphdr->ihl != 5) {
-		// not ipv4 or has ip options
+	if (iphdr->version != 4 || iphdr->ihl != 5
+		|| (iphdr->protocol == PROTOCOL_TCP && tcphdr->doff != 5)) {
+		// the pkt is not ipv4 or has ip options
+		// or has tcp options
 		goto can_not_compact;
 	}
 	if (csum(iphdr, sizeof *iphdr)) {
@@ -593,9 +641,16 @@ void xmit_compress(void *ippkt, struct list *pkt_list)
 	sflow = get_sflow_by_hash(hval, &skey);
 
 	if (!sflow) {	// new flow
+		int tmp;
 		u8 fid;
 
-		fid = get_id(idp);
+		tmp = get_id(idp);
+		if (tmp < 0) {
+			printf("err: get_id = %d\n", tmp);
+			goto err_out;
+		}
+		else
+			fid = (u8) tmp;
 		// reverse-locate flow entry also via fid
 
 		sflow = build_sflow_by_hash(hval, &skey, ippkt, fid);
@@ -621,11 +676,12 @@ void xmit_compress(void *ippkt, struct list *pkt_list)
 			break;
 	}
 
-	touch_flow(sflow);
+	touch_sflow(sflow);
 	return;
 
 can_not_compact:
 	add_to_pkt_list(pkt_list, ippkt, ntohs(iphdr->tot_len));
+err_out:
 	return;
 }
 
@@ -654,20 +710,20 @@ int recv_compress(void *cpkt, int len, pkt_t **ippkt, pkt_t **send_back_pkt)
 	hval = hash_bytes(&rkey, sizeof rkey);
 	rflow = get_rflow_by_hash(hval, &rkey);
 
-	if (!rflow) {	// new flow
-		rflow = build_rflow_by_hash(hval, &rkey, cpkt);
-	}
-
-	assert(rflow);
-
 	switch (chdr->t) {
 		case CTYPE_FRM_CTL:
 			switch (chdr->i) {
 				case CTYPE_CTL_REQ:
+					assert(!rflow);
+					rflow = build_rflow_by_hash(hval, &rkey, cpkt);
+
 					*send_back_pkt = build_ack(cpkt);
 					break;
 				case CTYPE_CTL_ACK:
-					sflow_rindex[chdr->id]->state = STATE_ESTABLISHED;
+					if (sflow_rindex[chdr->id])
+						sflow_rindex[chdr->id]->state = STATE_ESTABLISHED;
+					else
+						printf("sflow_rindex[%d] is null\n", chdr->id);
 					break;
 				case CTYPE_CTL_FLT:
 					break;
@@ -677,16 +733,22 @@ int recv_compress(void *cpkt, int len, pkt_t **ippkt, pkt_t **send_back_pkt)
 			}
 			break;
 		case CTYPE_FRM_TCP:
+			assert(rflow);
+			touch_rflow(rflow);
 			*ippkt = recv_tcp(cpkt, len, rflow);
 			break;
 		case CTYPE_FRM_UDP:
+			assert(rflow);
+			touch_rflow(rflow);
 			*ippkt = recv_udp(cpkt, len, rflow);
 			break;
 		case CTYPE_FRM_RAW:
+			assert(rflow);
+			touch_rflow(rflow);
 			*ippkt = recv_raw(cpkt, len, rflow);
 			break;
 		default:
-			assert(1);
+			assert(0);
 	}
 
 	return 0;
