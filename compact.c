@@ -606,6 +606,7 @@ void compact_init()
 void xmit_compress(void *ippkt, struct list *pkt_list)
 {
 	struct iphdr *iphdr = (struct iphdr *)ippkt;
+	struct tcphdr *tcphdr = (struct tcphdr *)(ippkt + sizeof *iphdr);
 
 	skey_t skey;
 	u32 hval;
@@ -613,8 +614,10 @@ void xmit_compress(void *ippkt, struct list *pkt_list)
 
 	list_init(pkt_list);
 
-	if (iphdr->version != 4 || iphdr->ihl != 5) {
-		// not ipv4 or has ip options
+	if (iphdr->version != 4 || iphdr->ihl != 5
+		|| (iphdr->protocol == PROTOCOL_TCP && tcphdr->doff != 5)) {
+		// the pkt is not ipv4 or has ip options
+		// or has tcp options
 		goto can_not_compact;
 	}
 	if (csum(iphdr, sizeof *iphdr)) {
