@@ -498,6 +498,8 @@ static pkt_t* recv_udp(void *cpkt, u16 len, rflow_node_t *rflow)
 	memcpy(&udphdr->check, cpkt + offset, sizeof udphdr->check);
 	offset += sizeof udphdr->check;
 
+	udphdr->len = htons(len - offset + sizeof *udphdr);
+
 	memcpy(pkt->data + sizeof *iphdr + sizeof *udphdr,
 			cpkt + offset,
 			len - offset);
